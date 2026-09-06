@@ -60,7 +60,7 @@ echo ""
 
 # Text-based states (case-insensitive)
 N_PROPUESTO=$(count_state "Propuesto|Proposed")
-N_ANALISIS=$(count_state "En an[aá]lisis|In analysis|Under review")
+N_ANALISIS=$(count_state "En an(a|á)lisis|In analysis|Under review")
 N_APROBADO=$(count_state "Aprobado|Approved")
 N_RECHAZADO=$(count_state "Rechazado|Rejected")
 N_DIFERIDO=$(count_state "Diferido|Deferred|Backlog")
