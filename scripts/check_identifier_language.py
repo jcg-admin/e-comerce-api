@@ -29,18 +29,22 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 
 def thyrox_gate():
-    """La ruta del gate del proveedor — variable declarada, luego hermano."""
+    """La ruta del gate del proveedor — variable declarada, luego hermano.
+
+    Si THYROX_ROOT SE DECLARA, es la ÚNICA fuente: no cae al hermano si no
+    resuelve. La variable existe para que el consumidor decida dónde está
+    el proveedor — una declarada-e-inexistente que caiga por detrás la
+    vuelve decorativa (:ref:`h-docs-1145`, reportado por el coordinador
+    tras medir ``THYROX_ROOT=/no/existe`` con un hermano presente y ver el
+    mismo resultado que sin declarar nada)."""
     declared = os.environ.get('THYROX_ROOT')
-    candidates = []
     if declared:
-        candidates.append(pathlib.Path(declared))
-    # Clon hermano: <arbol>/thyrox junto a <arbol>/kaupamex-api.
-    candidates.append(HERE.parents[1] / 'thyrox')
-    for root in candidates:
-        gate = root / 'src' / 'gates' / 'check_identifier_language.py'
-        if gate.is_file():
-            return gate
-    return None
+        gate = pathlib.Path(declared) / 'src' / 'gates' / 'check_identifier_language.py'
+        return gate if gate.is_file() else None
+    # Clon hermano: <arbol>/thyrox junto a <arbol>/kaupamex-api — SOLO
+    # cuando THYROX_ROOT no se declaró en absoluto.
+    gate = HERE.parents[1] / 'thyrox' / 'src' / 'gates' / 'check_identifier_language.py'
+    return gate if gate.is_file() else None
 
 
 def main(argv):

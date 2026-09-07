@@ -50,6 +50,25 @@ class TestStubResolvesTheProvider:
         monkeypatch.setattr(stub, 'thyrox_gate', lambda: None)
         assert stub.main(['check_identifier_language.py']) == 2
 
+    def test_a_declared_but_nonexistent_thyrox_root_refuses(self, monkeypatch):
+        """Si THYROX_ROOT SE DECLARA y no resuelve, se rehúsa — NO se busca
+        por detrás del hermano. La variable existe para que el consumidor
+        decida dónde está el proveedor; si la búsqueda cae al hermano de
+        todos modos, la variable es decorativa (defecto real, corregido en
+        el mismo commit que este test — reportado por el coordinador tras
+        medir ``THYROX_ROOT=/no/existe`` y obtener el mismo FAIL que sin
+        declarar nada).
+
+        El hermano real (``<arbol>/thyrox``) SIGUE presente en este entorno
+        mientras se corre este test — es la condición que hace que el caso
+        discrimine: si el fix cae, este test vuelve a pasar por la vía
+        equivocada (el hermano), no porque la guarda de rehúse funcione."""
+        assert stub.thyrox_gate() is not None, (
+            'el hermano tiene que existir para que este test discrimine — '
+            'si no hay hermano, un `is None` sería un false-positive del fix')
+        monkeypatch.setenv('THYROX_ROOT', '/no/existe/thyrox-root-inexistente')
+        assert stub.thyrox_gate() is None
+
 
 class TestStubPropagatesThisTreesBaseline:
     """El baseline es de API, no de THYROX (DEC-04) — el stub lo declara."""
