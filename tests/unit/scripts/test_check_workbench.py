@@ -22,6 +22,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'scripts'))
 
 from check_workbench import (  # noqa: E402
+    bench_root,
+    main,
     offences_of,
     required_keys,
     work_dirs,
@@ -129,3 +131,46 @@ class TestWorkDirs:
 
     def test_an_absent_bench_gives_an_empty_list_not_an_error(self, tmp_path):
         assert work_dirs(tmp_path / 'no-existe') == []
+
+
+class TestBenchRoot:
+    """De donde sale la raiz del banco — la mitad que el gate no medía.
+
+    Medido 2026-09-07 (tarea #247): el gate derivaba su raiz con
+    ``pathlib.Path(__file__).resolve().parent.parent`` y la LIGABA en la firma
+    de ``work_dirs``, asi que ni reasignando el modulo se movia. Con la raiz
+    movida publicaba ``0 incumplidor(es) (alcance medido: 0 pieza(s))`` y
+    **exit 0** — el denominador salvaba al lector humano, el codigo de salida
+    no discriminaba «no hay defectos» de «no medi nada».
+
+    El hogar del banco es un PARAMETRO del consumidor: lo declara
+    ``THYROX_WORKBENCH_API`` en el ``.env`` de este arbol, que es donde ya
+    esta. Estos dos controles miden que el gate lo CONSUMA.
+    """
+
+    def test_the_root_comes_from_the_declared_constant(self, tmp_path, monkeypatch):
+        """Si la constante nombra otro hogar, el gate mide ESE hogar.
+
+        Control de anulacion: si el mecanismo volviera a derivar la raiz por
+        aritmetica de ``__file__``, este caso cae — mediria el banco real de
+        ``scripts/workbench`` y no el fabricado aqui.
+        """
+        declared = tmp_path / 'otro-banco'
+        declared.mkdir()
+        make_work(declared, 'trabajo-20260907T000000', CONFORMING)
+        monkeypatch.setenv('THYROX_WORKBENCH_API', str(declared))
+        assert bench_root() == declared
+
+    def test_a_root_that_does_not_exist_refuses_instead_of_publishing_zero(
+            self, tmp_path, monkeypatch, capsys):
+        """Raiz ausente: exit 2 y sin cifra, nunca ``0 incumplidores``.
+
+        Un banco presente y VACIO es un cero legitimo — un clon recien hecho
+        no tiene piezas todavia. Un banco que no existe es otra cosa: nadie
+        midio nada. Colapsarlos es el sub-patron D.
+        """
+        monkeypatch.setenv('THYROX_WORKBENCH_API', str(tmp_path / 'se-mudo'))
+        with pytest.raises(SystemExit) as salida:
+            main(['--strict'])
+        assert salida.value.code == 2
+        assert 'incumplidor' not in capsys.readouterr().out
