@@ -1,414 +1,64 @@
 #!/usr/bin/env python3
-"""Gate: los identificadores se escriben en inglés; los comentarios, en español.
+"""check_identifier_language.py — delega en el gate de thyrox.
 
-Cierra la tarea #365 (``H-API-607``). Nace de una directiva reiterada del
-ejecutor —*"los nombres de los archivos, clases, funciones y atributos son en
-inglés, los comentarios sí pueden ir en español"*— que hasta hoy vivía sólo en
-prosa (``redaccion-tecnica-es.md``). La prosa no lo previno: hizo falta que el
-ejecutor interrumpiera la tarea para corregirlo, que es justo el coste que este
-guion existe para eliminar.
+El mecanismo (AST, léxico cerrado, corpus) se mudó a THYROX (DEC-04,
+actualizar-agentic-ai-thyrox): ``thyrox: src/gates/check_identifier_language.py``.
+Este archivo se conserva porque sus consumidores lo invocan **por su ruta** —
+el `.githooks/pre-commit` (gate 4) y `thyrox: src/corpus/migration_report.py`
+(fila `check_identifier_language`)— y reapuntarlos es un cambio aparte del
+porte del mecanismo.
 
-Qué mira, y qué NO
-==================
+Lo único que este stub aporta que el mecanismo por sí solo no tiene: EL
+BASELINE de deuda heredada de **este** árbol. El baseline es parámetro del
+consumidor, no del proveedor (:ref:`h-docs-1072` — un baseline ausente leído
+como vacío haría ver como nueva a los 1268 identificadores ya congelados), así
+que se declara aquí, donde vive el archivo, y se exporta para ESTA invocación
+—el proceso gana sobre el ``.env``, que es como ``env_value`` ya resuelve la
+precedencia—.
 
-Mira **identificadores declarados**: clases, funciones, métodos, argumentos y
-nombres asignados. NO mira docstrings, comentarios ni cadenas — ahí el español
-es la convención, no el defecto.
-
-Cómo decide que una palabra es española
-========================================
-
-Tres criterios, los tres derivados de medir el árbol, no de memoria:
-
-1. **Morfología exclusiva** — sufijos que el inglés no produce (``-ción``,
-   ``-dad``, ``-mente``, ``-ando``, ``-iendo``, ``-ador``, ``-encia``). Sólo
-   sobre palabras de más de cinco letras, para no confundir ``dad`` o ``and``.
-2. **Partículas de alta precisión** en un identificador de **dos o más**
-   palabras. El umbral importa: una variable llamada ``y`` o ``la`` es una letra
-   suelta, no una frase en español; ``devuelve_el_metodo`` sí lo es.
-3. **Léxico cerrado** (``SPANISH_WORDS``) — las palabras de contenido que los
-   dos anteriores no ven: un infinitivo (``esperar``, ``verificar``) o un
-   sustantivo llano (``tablero``, ``hallazgo``) no tienen sufijo exclusivo ni
-   partícula. Se derivó midiendo los nombres reales del árbol (TASK-DB-0003),
-   no de memoria, y es la ÚNICA lista: el gate de nombres de ``docs`` la reusa
-   por ruta en vez de copiarla.
-
-Se excluyen a propósito las partículas ambiguas con el inglés (``no``, ``son``,
-``a``, ``un``, ``es``) y ``sin``, que es una función trigonométrica.
-
-*Métrica:* palabras españolas en identificadores declarados, por AST.
-*Ciega a:* un identificador español cuyas palabras existan también en inglés
-(``lista``→no, pero ``total``, ``final``, ``normal`` sí pasan), y a cualquier
-palabra fuera del léxico. Es una **cota inferior**: un 0 no prueba que no quede
-español, prueba que no queda del que este instrumento sabe ver.
-
-Su gemelo en prosa
-==================
-
-``docs: .claude/rules/redaccion-tecnica-es.md``, sección «Elegir el término».
-Miden la misma pregunta sobre ejes distintos, y **el veredicto puede ser el
-opuesto**: ``ejecución`` es correcto en prosa y defecto en un identificador
-(``run_id``); ``run`` al revés. ``SPANISH_WORDS`` es la forma ejecutable de la
-tabla de términos que esa regla resuelve — cuando resuelve uno nuevo, su palabra
-española entra aquí.
-
-Baseline
-========
-
-La deuda heredada está congelada en ``scripts/identifier_language_baseline.txt``
-(``archivo::identificador``). Un identificador ya listado no bloquea; uno nuevo,
-sí. Mismo criterio prospectivo que el mapa de capas de ``H-API-238`` y el grifo
-cerrado de la tarea #313: se paga al tocar, no en un barrido.
+Sin thyrox alcanzable **NO se emite un veredicto**: se rehúsa con exit 2. Un 0
+aquí no distinguiría «ningún identificador incumple» de «no pude medir», que
+es el sub-patrón D de ``metrica-decide-la-conclusion.md``.
 """
-import argparse
-import ast
+import os
 import pathlib
-import re
+import subprocess
 import sys
 
-ROOTS = ('src', 'tests', 'addons')
-BASELINE = pathlib.Path(__file__).with_name('identifier_language_baseline.txt')
-
-#: Sufijos que el inglés no produce. Se exigen sobre palabras de >5 letras.
-SPANISH_MORPHOLOGY = re.compile(
-    r'(cion|ciones|dades?|mente|ando|iendo|adora?|encia|anza)$'
-)
-
-#: Partículas inequívocas. Sólo cuentan en identificadores de 2+ palabras.
-#: Excluidas por ambigüedad con el inglés: no, son, a, un, e, i, o, y, es, sin.
-SPANISH_PARTICLES = frozenset({
-    'el', 'los', 'las', 'del', 'una', 'unos', 'unas', 'que', 'con', 'por',
-    'para', 'desde', 'hasta', 'sobre', 'entre', 'cuando', 'donde', 'porque',
-    'segun', 'sus', 'de', 'en',
-})
-
-#: Palabras de contenido que la morfología no atrapa, medidas en este árbol.
-SPANISH_WORDS = frozenset({
-    'producto', 'orden', 'usuario', 'cliente', 'precio', 'fecha', 'modelo',
-    'nombre', 'campo', 'valor', 'codigo', 'linea', 'factura', 'pago', 'envio',
-    'empresa', 'prueba', 'sonda', 'devuelve', 'rechaza', 'admite', 'crea',
-    'barrido', 'marcado', 'privado', 'heredado', 'publico', 'estatico',
-    'clase', 'metodo', 'atributo', 'archivo', 'ejemplo', 'tarea', 'datos',
-    'tienda', 'carrito', 'pedido', 'entrega', 'moneda', 'impuesto', 'cuenta',
-    'asiento', 'almacen', 'existencia', 'comprador', 'vendedor', 'cobro',
-    # Vocabulario resuelto por redaccion-tecnica-es.md («Elegir el término»):
-    # el árbol nombra estas cosas en inglés, así que en un identificador
-    # el español es defecto. En PROSA el veredicto puede ser el opuesto.
-    'corrida', 'corridas', 'tanda', 'tandas', 'guion', 'guiones',
-    'lote', 'lotes',
-    # TASK-DB-0003 (b): infinitivos y sustantivos llanos que la morfología no
-    # atrapa, derivados de los NOMBRES DE ARCHIVO reales de los cinco repos —
-    # el banco de la mitad (a) es
-    # docs: .claude/eventos/derivar-lexico-cerrado-de-nombres-20260905T062807/
-    # (salidas/lexico-derivado-2026-09-05T06-40-22.txt; triaje en el mismo
-    # directorio). Es UNA lista, no una segunda fuente: el gate de nombres de
-    # docs reusa `spanish_words_in`, así que extender aquí sirve a los tres
-    # ejes (identificador en api, nombre de archivo, identificador en .claude).
-    'activos', 'agente', 'agentes', 'agrupar', 'antes', 'apertura',
-    'arrancar', 'arranque', 'artefacto', 'artefactos', 'asignadas', 'aviso',
-    'bloqueo', 'buscar', 'campos', 'carrete', 'cascara', 'censar', 'censo',
-    'cerrar', 'cifra', 'clasificar', 'clon', 'columnas', 'como', 'compara',
-    'completo', 'conserva', 'contraparte', 'contrato', 'costo', 'decidir',
-    'declarada', 'declaradas', 'declarado', 'dependencias', 'derivar',
-    'desactualizado', 'despachar', 'destino', 'dia', 'directorio',
-    'discrimina', 'disparo', 'divergencias', 'documentales', 'documento',
-    'documentos', 'drenar', 'duplicados', 'emisores', 'enlace', 'escotilla',
-    'escribir', 'espera', 'esperar', 'eventos', 'extraer', 'familia',
-    'fidelidad', 'fuente', 'gana', 'grupo', 'guardas', 'hallazgo',
-    'hallazgos', 'idioma', 'instalar', 'mapa', 'materializa', 'medir',
-    'mensaje', 'minimos', 'modelos', 'mutante', 'objetos', 'paridad',
-    'pendiente', 'pendientes', 'porte', 'prefijo', 'premisa', 'prosa',
-    'proyectos', 'publicar', 'queda', 'ramas', 'reconciliar', 'recupera',
-    'referencias', 'refrescar', 'renumerar', 'reporte', 'requerido',
-    'rutas', 'salida', 'sesion', 'sincronizar', 'sintaxis', 'sobres',
-    'subagentes', 'submodulo', 'sucesor', 'superficies', 'tabla', 'tablero',
-    'tardia', 'tareas', 'tipos', 'trabajo', 'tres', 'varada', 'vecinos',
-    'veredicto', 'verificar', 'vigente', 'vivo', 'vocabulario', 'volcar',
-})
+HERE = pathlib.Path(__file__).resolve().parent
 
 
-def split_words(name):
-    """Parte ``snake_case`` y ``camelCase`` en palabras minúsculas."""
-    out = []
-    for chunk in re.split(r'_+', name):
-        out += re.findall(r'[A-Z]+(?![a-z])|[A-Z][a-z]+|[a-z]+', chunk)
-    return [w.lower() for w in out if w]
+def thyrox_gate():
+    """La ruta del gate del proveedor — variable declarada, luego hermano."""
+    declared = os.environ.get('THYROX_ROOT')
+    candidates = []
+    if declared:
+        candidates.append(pathlib.Path(declared))
+    # Clon hermano: <arbol>/thyrox junto a <arbol>/kaupamex-api.
+    candidates.append(HERE.parents[1] / 'thyrox')
+    for root in candidates:
+        gate = root / 'src' / 'gates' / 'check_identifier_language.py'
+        if gate.is_file():
+            return gate
+    return None
 
 
-#: Igual que ``split_words`` pero conservando los dígitos como token propio.
-#: ``split_words`` los descarta, y esa pérdida es la que hace ilegible
-#: ``CenEn16931``: sin el ``16931``, el ``En`` queda suelto y se lee como la
-#: preposición española.
-_TOKEN = re.compile(r'[A-Z]+(?![a-z])|[A-Z][a-z]+|[a-z]+|\d+')
+def main(argv):
+    gate = thyrox_gate()
+    if gate is None:
+        print('FATAL: no se encontró thyrox/src/gates/check_identifier_language.py.',
+              file=sys.stderr)
+        print('       Declara THYROX_ROOT o clona thyrox como hermano.', file=sys.stderr)
+        print('       NO se emite veredicto: un 0 aquí sería un verde falso.', file=sys.stderr)
+        return 2
 
-
-def _particles_before_digits(name):
-    """Partículas que van pegadas a dígitos — códigos, no preposiciones.
-
-    ``En16931`` es la norma europea EN 16931. El español no numera sus
-    preposiciones, así que una partícula seguida de dígitos es siempre un
-    token técnico. Medido sobre los 1137 del baseline: no pierde ninguno.
-    """
-    out = set()
-    for chunk in re.split(r'_+', name):
-        tokens = _TOKEN.findall(chunk)
-        for cur, nxt in zip(tokens, tokens[1:]):
-            if cur.lower() in SPANISH_PARTICLES and nxt.isdigit():
-                out.add(cur.lower())
-    return out
-
-
-def _technical_suffix(name):
-    """¿La partícula final es un código, no una preposición?
-
-    ``AccountEdiXmlUbl_De`` termina en el ISO-3166 de Alemania. La señal es la
-    **forma mixta**: CamelCase real antes del guion bajo. El español en
-    identificadores se escribe en snake_case puro (``_tracking_de``,
-    ``_apunte_en``, ``resp_con``), nunca mezclado — medido sobre los 1137 del
-    baseline, esta regla no pierde ninguno.
-
-    Y una preposición española no cierra un nombre: conecta (``orden_de_compra``).
-    Cuando queda al final de un identificador CamelCase, es un sufijo técnico.
-    """
-    if '_' not in name:
-        return False
-    head, _, tail = name.rpartition('_')
-    return (tail.lower() in SPANISH_PARTICLES
-            and re.search(r'[a-z][A-Z]', head) is not None)
-
-
-#: Cuantos hermanos hacen falta para que un sufijo de dos letras sea un
-#: codigo y no una preposicion. Tres es el minimo que descarta la
-#: coincidencia: un archivo con `orden_de`, `orden_en` y `orden_por` seria el
-#: falso positivo de esta regla, y no existe — medido, 0 en el arbol.
-FAMILIA_MINIMA = 3
-
-
-def code_suffix_families(names):
-    """Los prefijos que un archivo declara como familia de codigos de dos letras.
-
-    ``check_vat_de`` no es espanol: ``de`` es el ISO-3166 de Alemania, y el
-    nombre es el CONTRATO del despachador de la fuente —
-    ``getattr(self, 'check_vat_' + cc.lower(), None)``—, asi que renombrarlo
-    rompe la validacion del IVA aleman.
-
-    Lo que lo distingue de una preposicion no es el token, que es identico,
-    sino **la familia**: el mismo archivo declara cuarenta hermanos
-    ``check_vat_XX`` con otros codigos. Esa evidencia se deriva del archivo, no
-    de una tabla ISO copiada aqui — que ademas no discriminaria, porque ``de``
-    es a la vez pais y preposicion.
-
-    ``_technical_suffix`` cubre el caso hermano en CamelCase
-    (``AccountEdiXmlUbl_De``) y declara que el espanol se escribe en snake_case
-    puro. ``check_vat_de`` es el hueco de ese razonamiento: es snake_case puro
-    Y su cola es un codigo.
-
-    *Metrica:* prefijos con >= FAMILIA_MINIMA identificadores del mismo archivo
-    que comparten prefijo y difieren en una cola de exactamente dos letras.
-    *Ciega a:* una familia repartida entre varios archivos — cada archivo se
-    mide solo, que es el lado seguro: sin hermanos, el sufijo vuelve a contar
-    como preposicion.
-    """
-    por_prefijo = {}
-    for name in names:
-        head, sep, tail = name.rpartition('_')
-        if sep and len(tail) == 2 and tail.isalpha():
-            por_prefijo.setdefault(head.lower(), set()).add(tail.lower())
-    return {prefijo for prefijo, colas in por_prefijo.items()
-            if len(colas) >= FAMILIA_MINIMA}
-
-
-# ── Cuarto criterio: el CORPUS, que es abierto ───────────────────────────────
-#
-# Los tres de arriba son cerrados por construccion: la morfologia ve siete
-# sufijos, las particulas son una lista, y `SPANISH_WORDS` es una lista mas.
-# Una lista solo atrapa lo que alguien se acordo de enumerar, asi que la
-# siguiente palabra se cuela — medido: de catorce identificadores espanoles que
-# yo mismo escribi, el gate vio **uno**.
-#
-# El corpus decide sin lista: la palabra es espanola si el lexico espanol la
-# atestigua con MARGEN sobre el ingles. Umbral derivado midiendo, no elegido:
-#
-#   espanol   4.0 .. 16.7   (bien 5.1 · mal 4.0 · raiz 4.9 · tocados 16.7)
-#   ingles   -6.9 ..  1.6   (final 1.6 · total 0.8 · general 0.5 · error 0.4)
-#
-# Los cuatro mas altos del ingles son cognados exactos — la ceguera que la
-# regla ya declara. 3.0 los separa con holgura por los dos lados.
-CORPUS_MARGIN = 3.0
-
-#: Log-prob que se asume cuando una forma NO esta en el corpus del otro idioma.
-#: Con un valor finito la resta sigue definida y la ausencia pesa a favor.
-CORPUS_ABSENT = -30.0
-
-_corpus_cache = {}
-
-
-def _corpus(lang):
-    """El lexico de un idioma, o ``None`` si no se puede cargar."""
-    if lang in _corpus_cache:
-        return _corpus_cache[lang]
-    try:
-        import gzip
-        import json as _json
-        import spacy_lookups_data
-        home = pathlib.Path(spacy_lookups_data.__file__).parent / 'data'
-        with gzip.open(home / f'{lang}_lexeme_prob.json.gz', 'rt',
-                       encoding='utf-8') as handle:
-            _corpus_cache[lang] = _json.load(handle)
-    except Exception:
-        _corpus_cache[lang] = None
-    return _corpus_cache[lang]
-
-
-def corpus_available():
-    """¿Estan los dos lexicos? El gate REHUSA sin ellos, no publica un cero."""
-    return _corpus(ES_LANG) is not None and _corpus(EN_LANG) is not None
-
-
-def spanish_by_corpus(word):
-    """¿El corpus espanol la atestigua con margen sobre el ingles?
-
-    Metrica: diferencia de log-prob entre los dos lexicos de
-    ``spacy-lookups-data`` (1 000 001 formas cada uno).
-    Ciega a: el cognado exacto (``total``, ``final``, ``normal``), que los dos
-    idiomas atestiguan por igual; y a la forma flexionada que ningun corpus
-    tiene, donde la ausencia en ingles la empuja por encima del umbral.
-    """
-    spanish, english = _corpus(ES_LANG), _corpus(EN_LANG)
-    if spanish is None or english is None:
-        return False
-    here = spanish.get(word)
-    if here is None:
-        return False
-    return here - english.get(word, CORPUS_ABSENT) >= CORPUS_MARGIN
-
-
-ES_LANG = 'es'
-EN_LANG = 'en'
-
-
-def spanish_words_in(name, code_families=frozenset()):
-    """Palabras españolas del identificador, o lista vacía.
-
-    ``code_families`` son los prefijos que el ARCHIVO declara como familia de
-    codigos de dos letras (ver :func:`code_suffix_families`). Es opcional para
-    que el gate hermano de ``docs`` —que mide nombres de archivo sueltos, sin
-    archivo que dé contexto— siga llamando con un solo argumento.
-    """
-    words = split_words(name)
-    hits = [w for w in words
-            if w in SPANISH_WORDS
-            or (len(w) > 5 and SPANISH_MORPHOLOGY.search(w))
-            or spanish_by_corpus(w)]
-    if len(words) >= 2:
-        # Las tres exenciones se miden contra el baseline entero antes de
-        # entrar: ninguna pierde un solo caso de español real.
-        tecnicas = _particles_before_digits(name)
-        if _technical_suffix(name):
-            tecnicas.add(name.rpartition('_')[2].lower())
-        head, sep, tail = name.rpartition('_')
-        if sep and head.lower() in code_families:
-            tecnicas.add(tail.lower())
-        hits += [w for w in words
-                 if w in SPANISH_PARTICLES and w not in tecnicas]
-    return sorted(set(hits))
-
-
-def declared_identifiers(tree):
-    """Los identificadores que el archivo **declara**, con su línea.
-
-    Los docstrings y comentarios quedan fuera por construcción: el AST no los
-    entrega como nombre de nada.
-    """
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            yield node.name, node.lineno
-        elif isinstance(node, ast.arg):
-            yield node.arg, node.lineno
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            yield node.id, node.lineno
-
-
-def load_baseline():
-    if not BASELINE.exists():
-        return set()
-    return {line.strip() for line in BASELINE.read_text().splitlines()
-            if line.strip() and not line.startswith('#')}
-
-
-def scan(paths):
-    """Devuelve ``(violaciones, archivos_medidos)``."""
-    findings, measured = [], 0
-    for path in paths:
-        if 'migrations' in path.parts:
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding='utf-8'))
-        except (SyntaxError, UnicodeDecodeError):
-            continue
-        measured += 1
-        seen = set()
-        declarados = list(declared_identifiers(tree))
-        familias = code_suffix_families(n for n, _ in declarados)
-        for name, lineno in declarados:
-            if name in seen:
-                continue
-            hits = spanish_words_in(name, familias)
-            if hits:
-                seen.add(name)
-                findings.append((str(path), name, lineno, hits))
-    return findings, measured
-
-
-def collect(argv_paths):
-    if argv_paths:
-        return [pathlib.Path(p) for p in argv_paths if p.endswith('.py')]
-    files = []
-    for root in ROOTS:
-        files += sorted(pathlib.Path(root).rglob('*.py'))
-    return files
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('paths', nargs='*', help='archivos a medir (default: todo el árbol)')
-    parser.add_argument('--write-baseline', action='store_true',
-                        help='congela el estado actual como deuda heredada')
-    args = parser.parse_args()
-
-    findings, measured = scan(collect(args.paths))
-
-    if args.write_baseline:
-        lines = sorted({f'{path}::{name}' for path, name, _, _ in findings})
-        BASELINE.write_text(
-            '# Deuda heredada de identificadores en español (tarea #147).\n'
-            '# Congelada por check_identifier_language.py --write-baseline.\n'
-            '# Un identificador NUEVO no entra aquí: se escribe en inglés.\n'
-            + '\n'.join(lines) + '\n')
-        print(f'baseline escrita: {len(lines)} identificadores '
-              f'({measured} archivos medidos)')
-        return 0
-
-    baseline = load_baseline()
-    fresh = [f for f in findings if f'{f[0]}::{f[1]}' not in baseline]
-
-    if not fresh:
-        print(f'OK: identificadores en inglés ({measured} archivos medidos, '
-              f'{len(baseline)} en deuda heredada).')
-        return 0
-
-    print(f'FAIL — {len(fresh)} identificador(es) en español fuera del baseline:\n')
-    for path, name, lineno, hits in fresh:
-        print(f'  {path}:{lineno}  {name}   →  {", ".join(hits)}')
-    print('\nLos identificadores van en INGLÉS; los comentarios y docstrings, en')
-    print('español. Traducir el nombre, no buscarle un sinónimo más evocador:')
-    print('  Modelo → Model (no Probe) · _Base se queda _Base.')
-    print('OJO: un modelo CONCRETO no puede empezar ni terminar en guion bajo')
-    print('  (Django models.E023). Lo vigila check_model_name_lookup.py.')
-    print(f'\nMedido: {measured} archivos. Deuda heredada congelada: '
-          f'{len(baseline)} (tarea #147).')
-    return 1
+    env = dict(os.environ)
+    # El baseline de ESTE árbol. `setdefault`: si quien invoca ya lo declaró
+    # (p. ej. para probar contra otro archivo), esa declaración manda.
+    env.setdefault('IDENTIFIER_LANGUAGE_BASELINE',
+                    str(HERE / 'identifier_language_baseline.txt'))
+    return subprocess.call([sys.executable, str(gate), *argv[1:]], env=env)
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main(sys.argv))
