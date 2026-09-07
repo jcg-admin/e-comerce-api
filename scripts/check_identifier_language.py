@@ -218,6 +218,75 @@ def code_suffix_families(names):
             if len(colas) >= FAMILIA_MINIMA}
 
 
+# ── Cuarto criterio: el CORPUS, que es abierto ───────────────────────────────
+#
+# Los tres de arriba son cerrados por construccion: la morfologia ve siete
+# sufijos, las particulas son una lista, y `SPANISH_WORDS` es una lista mas.
+# Una lista solo atrapa lo que alguien se acordo de enumerar, asi que la
+# siguiente palabra se cuela — medido: de catorce identificadores espanoles que
+# yo mismo escribi, el gate vio **uno**.
+#
+# El corpus decide sin lista: la palabra es espanola si el lexico espanol la
+# atestigua con MARGEN sobre el ingles. Umbral derivado midiendo, no elegido:
+#
+#   espanol   4.0 .. 16.7   (bien 5.1 · mal 4.0 · raiz 4.9 · tocados 16.7)
+#   ingles   -6.9 ..  1.6   (final 1.6 · total 0.8 · general 0.5 · error 0.4)
+#
+# Los cuatro mas altos del ingles son cognados exactos — la ceguera que la
+# regla ya declara. 3.0 los separa con holgura por los dos lados.
+CORPUS_MARGIN = 3.0
+
+#: Log-prob que se asume cuando una forma NO esta en el corpus del otro idioma.
+#: Con un valor finito la resta sigue definida y la ausencia pesa a favor.
+CORPUS_ABSENT = -30.0
+
+_corpus_cache = {}
+
+
+def _corpus(lang):
+    """El lexico de un idioma, o ``None`` si no se puede cargar."""
+    if lang in _corpus_cache:
+        return _corpus_cache[lang]
+    try:
+        import gzip
+        import json as _json
+        import spacy_lookups_data
+        home = pathlib.Path(spacy_lookups_data.__file__).parent / 'data'
+        with gzip.open(home / f'{lang}_lexeme_prob.json.gz', 'rt',
+                       encoding='utf-8') as handle:
+            _corpus_cache[lang] = _json.load(handle)
+    except Exception:
+        _corpus_cache[lang] = None
+    return _corpus_cache[lang]
+
+
+def corpus_available():
+    """¿Estan los dos lexicos? El gate REHUSA sin ellos, no publica un cero."""
+    return _corpus(ES_LANG) is not None and _corpus(EN_LANG) is not None
+
+
+def spanish_by_corpus(word):
+    """¿El corpus espanol la atestigua con margen sobre el ingles?
+
+    Metrica: diferencia de log-prob entre los dos lexicos de
+    ``spacy-lookups-data`` (1 000 001 formas cada uno).
+    Ciega a: el cognado exacto (``total``, ``final``, ``normal``), que los dos
+    idiomas atestiguan por igual; y a la forma flexionada que ningun corpus
+    tiene, donde la ausencia en ingles la empuja por encima del umbral.
+    """
+    spanish, english = _corpus(ES_LANG), _corpus(EN_LANG)
+    if spanish is None or english is None:
+        return False
+    here = spanish.get(word)
+    if here is None:
+        return False
+    return here - english.get(word, CORPUS_ABSENT) >= CORPUS_MARGIN
+
+
+ES_LANG = 'es'
+EN_LANG = 'en'
+
+
 def spanish_words_in(name, code_families=frozenset()):
     """Palabras españolas del identificador, o lista vacía.
 
@@ -229,7 +298,8 @@ def spanish_words_in(name, code_families=frozenset()):
     words = split_words(name)
     hits = [w for w in words
             if w in SPANISH_WORDS
-            or (len(w) > 5 and SPANISH_MORPHOLOGY.search(w))]
+            or (len(w) > 5 and SPANISH_MORPHOLOGY.search(w))
+            or spanish_by_corpus(w)]
     if len(words) >= 2:
         # Las tres exenciones se miden contra el baseline entero antes de
         # entrar: ninguna pierde un solo caso de español real.
