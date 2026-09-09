@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # pre-push — stub. El mecanismo vive en thyrox.
 #
-#     Canonical owner: thyrox: src/gates/check_pushed_branch.py
+#     Canonical owner: thyrox: src/verify/check_pushed_branch.py
 #
-# Corre EL GATE 3 y sólo ése. `thyrox/src/gates/pre-push.sh` compone tres, y
+# Corre EL GATE 3 y sólo ése. `thyrox/src/verify/pre-push.sh` compone tres, y
 # los dos primeros —unicidad de etiqueta de hallazgo y artefactos mínimos por
 # iniciativa— miden `source/gestion/pm/`, que es el árbol documental de
 # kaupamex-docs y no existe aquí. Componerlos en este clon los pondría a medir
@@ -27,12 +27,12 @@ CONSUMIDOR="$(dirname "$AQUI")"
 # es la escotilla.
 DUENO=""
 if [ -n "${THYROX_ROOT:-}" ]; then
-    DUENO="$THYROX_ROOT/src/gates/check_pushed_branch.py"
+    DUENO="$THYROX_ROOT/src/verify/check_pushed_branch.py"
 else
     NIVEL="$AQUI"
     while [ "$NIVEL" != "/" ]; do
-        if [ -f "$NIVEL/thyrox/src/gates/check_pushed_branch.py" ]; then
-            DUENO="$NIVEL/thyrox/src/gates/check_pushed_branch.py"; break
+        if [ -f "$NIVEL/thyrox/src/verify/check_pushed_branch.py" ]; then
+            DUENO="$NIVEL/thyrox/src/verify/check_pushed_branch.py"; break
         fi
         NIVEL="$(dirname "$NIVEL")"
     done
@@ -40,7 +40,7 @@ fi
 
 if [ -z "$DUENO" ] || [ ! -f "$DUENO" ]; then
     cat >&2 <<'MSG'
-pre-push REHUSADO — no se encontró thyrox/src/gates/check_pushed_branch.py.
+pre-push REHUSADO — no se encontró thyrox/src/verify/check_pushed_branch.py.
 
 No se emite un veredicto: un gate que no puede medir no autoriza el push. Su
 silencio se leería como «la rama correcta va en el push», y no se midió.

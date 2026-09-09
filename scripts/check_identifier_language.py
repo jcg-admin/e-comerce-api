@@ -2,7 +2,7 @@
 """check_identifier_language.py — delega en el gate de thyrox.
 
 El mecanismo (AST, léxico cerrado, corpus) se mudó a THYROX (DEC-04,
-actualizar-agentic-ai-thyrox): ``thyrox: src/gates/check_identifier_language.py``.
+actualizar-agentic-ai-thyrox): ``thyrox: src/verify/check_identifier_language.py``.
 Este archivo se conserva porque sus consumidores lo invocan **por su ruta** —
 el `.githooks/pre-commit` (gate 4) y `thyrox: src/corpus/migration_report.py`
 (fila `check_identifier_language`)— y reapuntarlos es un cambio aparte del
@@ -50,7 +50,7 @@ def thyrox_gate():
 def main(argv):
     gate = thyrox_gate()
     if gate is None:
-        print('FATAL: no se encontró thyrox/src/gates/check_identifier_language.py.',
+        print('FATAL: no se encontró thyrox/src/verify/check_identifier_language.py.',
               file=sys.stderr)
         print('       Declara THYROX_ROOT o clona thyrox como hermano.', file=sys.stderr)
         print('       NO se emite veredicto: un 0 aquí sería un verde falso.', file=sys.stderr)

@@ -9,7 +9,7 @@ con `|| true`: un exit distinto de 0 se leía como verde (:ref:`h-docs-1057`).
 
 Corregido 2026-09-07T00:01:24 bajo la directiva del ejecutor de resolver
 en el mismo pase. El veredicto lo emite **el gate de thyrox**, que es el
-proveedor: `thyrox/src/gates/lint_agents.py`, cuyo esquema sombra de 20 claves
+proveedor: `thyrox/src/verify/lint_agents.py`, cuyo esquema sombra de 20 claves
 admite `model` y sí rechaza lo que el cliente ignora.
 
 Sin thyrox alcanzable **NO se emite un veredicto**: se rehúsa con exit 2. Un 0
@@ -40,7 +40,7 @@ def gate_de_thyrox():
 def main(argv):
     gate = gate_de_thyrox()
     if gate is None:
-        print('FATAL: no se encontró thyrox/src/gates/lint_agents.py.', file=sys.stderr)
+        print('FATAL: no se encontró thyrox/src/verify/lint_agents.py.', file=sys.stderr)
         print('       Declara THYROX_ROOT o clona thyrox como hermano.', file=sys.stderr)
         print('       NO se emite veredicto: un 0 aquí sería un verde falso.', file=sys.stderr)
         return 2
