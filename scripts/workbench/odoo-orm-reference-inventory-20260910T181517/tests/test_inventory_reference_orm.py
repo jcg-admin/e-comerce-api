@@ -107,3 +107,53 @@ def test_totals_are_the_sum_of_the_files(orm):
         len(c['methods']) for e in orm['files'] for c in e['classes'])
     assert total['symbols'] == (
         total['classes'] + total['module_functions'] + total['methods'])
+
+
+# --- la sonda de cuerpos `stub` ------------------------------------------
+#
+# Se prueba aparte porque defiende OTRA afirmacion: no cuantos simbolos hay,
+# sino QUE es un cuerpo vacio. El manifiesto llego a decir que «la mayoria son
+# metodos abstractos», sin medirlo; estas dos aserciones son lo que impide que
+# esa frase vuelva.
+
+stub_probe = _load('_probe_stub_bodies', RUN_DIR / 'probes/probe_stub_bodies.py')
+
+
+@pytest.fixture(scope='module')
+def stubs():
+    if not ORM_19C.is_dir():
+        pytest.skip(f'la raiz de la referencia no esta montada: {ORM_19C}')
+    return stub_probe.classify('odoo19c')
+
+
+def test_an_overload_is_not_an_empty_implementation(stubs):
+    """``typing.overload`` declara una firma; su cuerpo es `...` por el lenguaje.
+
+    El sujeto es real y esta duplicado a proposito en la fuente: ``mapped`` se
+    declara dos veces en ``models.py`` con ``@typing.overload`` y una tercera
+    con cuerpo. Contar esas dos como huecos es medir el significante.
+    """
+    mapped = [s for s in stubs['stubs']
+              if s['file'] == 'models.py' and s['name'] == 'mapped']
+    assert len(mapped) == 2
+    assert {s['bucket'] for s in mapped} == {'overload'}
+    assert all('typing.overload' in s['decorators'] for s in mapped)
+
+
+def test_the_plain_bucket_separates_abstract_base_from_empty_hook(stubs):
+    """Un `stub` sin decorador se discrimina por si alguien lo implementa.
+
+    ``Domain._to_sql`` es base de jerarquia — hay subclases con cuerpo.
+    ``DummyRLock.acquire`` no: es un no-op deliberado, y nadie en el paquete
+    declara ese nombre con cuerpo. Sin esta separacion los dos casos se
+    publican como la misma cosa.
+    """
+    by_key = {(s['file'], s['owner'], s['name']): s for s in stubs['stubs']}
+    base = by_key[('domains.py', 'Domain', '_to_sql')]
+    hook = by_key[('registry.py', 'DummyRLock', 'acquire')]
+    assert base['bucket'] == hook['bucket'] == 'plain'
+    assert base['overridden_elsewhere']
+    assert hook['overridden_elsewhere'] == []
+    assert (stubs['plain_con_implementacion_en_otra_clase']
+            + stubs['plain_sin_implementacion_en_el_paquete']
+            == stubs['by_bucket']['plain'])

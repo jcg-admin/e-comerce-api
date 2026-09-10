@@ -4,36 +4,43 @@
  "instrument": [
   "inventory_reference_orm.py",
   "probes/probe_orm_across_trees.py",
+  "probes/probe_stub_bodies.py",
   "tests/test_inventory_reference_orm.py"
  ],
 
- "metric": "Ocurrencias declaradas en odoo/orm de odoo19c (odoo-tools@abe4040ec1), extraidas por AST: una clase, una funcion de modulo, o un metodo con su clase duenia. La FIRMA se guarda entera (parametros en orden, banderas de opcional, vararg, kw-only, kwarg). ESTE RUN NO EXTIENDE COBERTURA: el censo de presencia ya alcanzo los 22 archivos no-__init__ de la referencia — cada uno tiene un archivo del mismo nombre en src/orm. Lo que cambia son dos cosas. (1) La UNIDAD: el censo empareja por nombre y su indice se queda con el primer homonimo, asi que su universo es de nombres UNICOS por archivo; aqui la unidad es la ocurrencia. Medido, la diferencia es 954 contra 792 — y ese 792 coincide EXACTAMENTE con los '792 simbolos de referencia' que el censo publico, que es el control cruzado de que las dos poblaciones son la misma. (2) El DESGLOSE: cada archivo lleva sus clases, cada clase sus metodos y cada funcion su firma, que es literalmente lo que el encargo pide contar.",
+ "metric": "Ocurrencias declaradas en odoo/orm de odoo19c (odoo-tools@abe4040ec1), extraidas por AST: una clase, una funcion de modulo, o un metodo con su clase duenia. La FIRMA se guarda entera (parametros en orden, banderas de opcional, vararg, kw-only, kwarg). ESTE RUN NO EXTIENDE COBERTURA: el censo de presencia ya alcanzo los 22 archivos no-__init__ de la referencia — cada uno tiene un archivo del mismo nombre en src/orm. Lo que cambia son dos cosas. (1) La UNIDAD: el censo empareja por nombre y su indice se queda con el primer homonimo, asi que su universo es de nombres UNICOS por archivo; aqui la unidad es la ocurrencia. Medido, la diferencia es 954 contra 792 — y ese 792 coincide EXACTAMENTE con los '792 simbolos de referencia' que el censo publico. Eso es CONSISTENCIA, no un control cruzado: los dos runs llaman al MISMO extractor sobre los MISMOS 22 archivos y deduplican igual, asi que la coincidencia confirma que la poblacion es la misma y no puede fallar por una razon interesante. Un control cruzado exigiria un segundo instrumento independiente, y este run no lo tiene. (2) El DESGLOSE: cada archivo lleva sus clases, cada clase sus metodos y cada funcion su firma, que es literalmente lo que el encargo pide contar.",
 
  "blind_to": [
-  "Simbolos declarados dentro de un if o un try a nivel de modulo: solo se recorre tree.body. Medido, son 4 en todo odoo/orm — la clase 'deprecated' de decorators.py:18 y sus tres funciones. No es una estimacion: se conto con un recorrido aparte.",
+  "Simbolos declarados dentro de un if o un try a nivel de modulo: solo se recorre tree.body. Medido, son 4 en todo odoo/orm y los cuatro viven en decorators.py: la clase 'deprecated' (:18), sus dos metodos (__init__ :19, __call__ :35) y el cierre 'wrapper' (:44) que vive DENTRO de __call__. No es una estimacion: se conto con un recorrido aparte.",
   "Clases anidadas dentro de una clase: el recorrido baja un nivel. Medido, son 0 en odoo/orm — la ceguera existe y hoy no tiene poblacion.",
   "Simbolos definidos dentro de una funcion (cierres): no entran, por decision del extractor que se importa. Son detalle de implementacion, no superficie.",
   "Metodos ligados dinamicamente con setattr o por metaclase: MetaModel existe en models.py:206, asi que la ceguera es real; el AST no puede verlos.",
   "types.py y __init__.py dan 0 simbolos y eso NO significa que esten vacios: el primero declara alias de tipo y el segundo re-exporta. Un 0 aqui es 'no declara def ni class', no 'no tiene contenido'.",
   "El mapeo archivo-a-archivo entre el ORM PLANO de 18c y el paquete de 19c. La sonda mide donde vive el ORM en cada arbol y sus tamanios; NO afirma que odoo/api.py de 18 sea environments.py de 19. Eso exige emparejar simbolo a simbolo entre las dos formas y es otro analisis.",
-  "El CUERPO como medida de completitud del lado de la referencia: 'stub' aqui cuenta 38 y la mayoria son metodos abstractos que la fuente stubea a proposito. El eje de fidelidad se resolvio en el run del censo, no en este."
+  "El CUERPO como medida de completitud del lado de la referencia: el eje de fidelidad se resolvio en el run del censo, no en este. Lo que este run SI mide de los 38 'stub' es su clase, con probes/probe_stub_bodies.py — porque una version anterior de esta clave afirmaba sin medir que 'la mayoria son metodos abstractos'. Medido: 14 llevan @typing.overload (declaracion de firma para el verificador de tipos, con su implementacion real al lado, NO un hueco), 3 llevan otro decorador que cambia lo que el cuerpo significa (classproperty, api.model, api.private) y 21 no llevan ninguno. De esos 21, 17 tienen su nombre implementado con cuerpo en otra clase del paquete —base de jerarquia— y 4 no: BaseModel._register_hook y _unregister_hook (que los addons implementan, fuera de odoo/orm) y DummyRLock.acquire/release (no-op deliberado). Sigue ciega a la jerarquia REAL: el cruce es por nombre dentro del paquete, no por MRO."
  ],
 
  "control": [
   "Anulacion 1 — deduplicar por nombre ('raw' := len(set(names))): cae EXACTAMENTE test_raw_exceeds_unique_where_a_name_repeats_across_classes (1 failed, 4 passed). Es la asercion que defiende la unidad de este run.",
   "Anulacion 2 — atribuir todo metodo a la PRIMERA clase del archivo en vez de a su duenia: caen EXACTAMENTE dos, test_raw_exceeds... (las cuatro duenias colapsan en una) y test_a_class_carries_its_own_methods (BaseModel deja de tener 194) (2 failed, 3 passed). Es la asercion que defiende el desglose por clase.",
-  "Los cinco sujetos de la suite son REALES del arbol de la referencia — fields_relational.py, models.py::BaseModel, utils.py::parse_field_expr, y la raiz ausente odoo18c/odoo/orm. Ninguno fabricado: un sujeto fabricado confirma el encuadre de quien escribio el instrumento."
+  "Anulacion 3 — que el cubo de un stub ignore el decorador (siempre 'plain'): cae EXACTAMENTE test_an_overload_is_not_an_empty_implementation (1 failed, 6 passed). Es la asercion que separa una declaracion de firma de un hueco.",
+
+  "Anulacion 4 — retirar el cruce de sobreescritura (overridden_elsewhere := [] siempre): cae EXACTAMENTE test_the_plain_bucket_separates_abstract_base_from_empty_hook (1 failed, 6 passed). Es la asercion que separa la base de jerarquia del hook vacio.",
+
+  "Los siete sujetos de la suite son REALES del arbol de la referencia — fields_relational.py, models.py::BaseModel, utils.py::parse_field_expr, la raiz ausente odoo18c/odoo/orm, models.py::BaseModel.mapped (duplicado a proposito por @typing.overload) y el par domains.py::Domain._to_sql contra registry.py::DummyRLock.acquire. Ninguno fabricado: un sujeto fabricado confirma el encuadre de quien escribio el instrumento."
  ],
 
  "reproducible": [
   "uv run pytest scripts/workbench/odoo-orm-reference-inventory-20260910T181517/tests/ -q",
   "uv run python scripts/workbench/odoo-orm-reference-inventory-20260910T181517/inventory_reference_orm.py",
-  "uv run python scripts/workbench/odoo-orm-reference-inventory-20260910T181517/probes/probe_orm_across_trees.py"
+  "uv run python scripts/workbench/odoo-orm-reference-inventory-20260910T181517/probes/probe_orm_across_trees.py",
+  "uv run python scripts/workbench/odoo-orm-reference-inventory-20260910T181517/probes/probe_stub_bodies.py"
  ],
 
  "outputs": [
   "outputs/inventory-odoo19c.json — el inventario completo, con la firma de cada funcion y metodo",
-  "outputs/orm-across-trees.json — donde vive el ORM en cada uno de los cuatro arboles"
+  "outputs/orm-across-trees.json — donde vive el ORM en cada uno de los cuatro arboles",
+  "outputs/stub-bodies-odoo19c.json — los 38 cuerpos stub, cada uno con su cubo, su decorador y su duenio"
  ],
 
  "source": [
@@ -55,6 +62,11 @@
   "firmas_con_kwonly": 11,
   "firmas_con_kwarg": 13,
   "cuerpos_stub": 38,
+  "cuerpos_stub_overload": 14,
+  "cuerpos_stub_otro_decorador": 3,
+  "cuerpos_stub_plain": 21,
+  "cuerpos_stub_plain_con_implementacion_en_otra_clase": 17,
+  "cuerpos_stub_plain_sin_implementacion_en_el_paquete": 4,
   "clases_sin_metodos": 2,
   "clase_mayor": "models.py::BaseModel — 194 metodos",
   "archivo_con_mas_homonimos": "fields_relational.py — 86 ocurrencias contra 50 nombres"
@@ -62,9 +74,9 @@
 
  "tasks": ["TASK-API-0392"],
 
- "destination": "El reporte del lado de la referencia se entrega en el turno; el JSON queda en outputs/ como fuente de las cifras. El par con el censo (TASK-API-0391) es lo que da el saldo del porte de src/orm, y ese saldo va al progreso de la iniciativa completar-raiz-orm en kaupamex-docs.",
+ "destination": "El reporte del lado de la referencia se entrega en el turno; el JSON queda en outputs/ como fuente de las cifras. El par con el censo (TASK-API-0391) es lo que da el saldo del porte de src/orm, y ese saldo va al progreso de la iniciativa completar-raiz-orm en kaupamex-docs. Ese progreso NO esta escrito: 'destino' aqui declara donde ira, no que ya este.",
 
- "measured_at": "2026-09-10T18:18:48",
+ "measured_at": "2026-09-10T18:28:23",
  "api_head": "cdb41aa6",
  "odoo_tools_head": "abe4040ec1"
 }
