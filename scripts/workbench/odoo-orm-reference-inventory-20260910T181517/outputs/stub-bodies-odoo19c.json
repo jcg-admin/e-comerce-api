@@ -7,8 +7,8 @@
     "plain": 21,
     "other_decorator": 3
   },
-  "plain_con_implementacion_en_otra_clase": 17,
-  "plain_sin_implementacion_en_el_paquete": 4,
+  "plain_implemented_elsewhere": 17,
+  "plain_not_implemented_in_package": 4,
   "by_file": {
     "decorators.py": 4,
     "domains.py": 5,

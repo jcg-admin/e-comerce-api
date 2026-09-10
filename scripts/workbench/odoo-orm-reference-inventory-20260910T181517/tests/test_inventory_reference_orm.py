@@ -4,7 +4,7 @@ Defiende al AGREGADOR, no al extractor: ``declared_symbols``, ``signature_of``
 y ``body_class`` ya tienen su suite en el run del censo de presencia
 (``orm-symbol-presence-census-20260910T175850``), y este run los importa en vez
 de reescribirlos. Lo que aqui se prueba es lo que este instrumento anade — la
-unidad CRUDA con su clase duenia, el desglose por clase, y que una raiz ausente
+unidad CRUDA con su clase `owner`, el desglose por clase, y que una raiz ausente
 emita cero en vez de fabricar.
 
 Todos los sujetos son REALES del arbol de la referencia. Un sujeto fabricado
@@ -59,17 +59,17 @@ def test_raw_exceeds_unique_where_a_name_repeats_across_classes(orm):
     """
     entry = _file(orm, 'fields_relational.py')
     assert entry['raw'] > entry['unique']
-    duenios = [clase['name'] for clase in entry['classes']
-               for metodo in clase['methods']
-               if metodo['name'] == 'setup_nonrelated']
-    assert len(duenios) == 4, duenios
-    assert len(set(duenios)) == 4, 'las cuatro son clases distintas'
+    owners = [owner['name'] for owner in entry['classes']
+              for method in owner['methods']
+              if method['name'] == 'setup_nonrelated']
+    assert len(owners) == 4, owners
+    assert len(set(owners)) == 4, 'las cuatro son clases distintas'
 
 
 def test_a_class_carries_its_own_methods(orm):
     """El desglose es POR CLASE: ``BaseModel`` declara 194 metodos."""
     entry = _file(orm, 'models.py')
-    base = [clase for clase in entry['classes'] if clase['name'] == 'BaseModel']
+    base = [owner for owner in entry['classes'] if owner['name'] == 'BaseModel']
     assert len(base) == 1
     assert len(base[0]['methods']) == 194
 
@@ -131,7 +131,7 @@ def test_an_overload_is_not_an_empty_implementation(stubs):
 
     El sujeto es real y esta duplicado a proposito en la fuente: ``mapped`` se
     declara dos veces en ``models.py`` con ``@typing.overload`` y una tercera
-    con cuerpo. Contar esas dos como huecos es medir el significante.
+    con cuerpo. Contar esas dos como metodos sin implementar es medir el significante.
     """
     mapped = [s for s in stubs['stubs']
               if s['file'] == 'models.py' and s['name'] == 'mapped']
@@ -154,6 +154,6 @@ def test_the_plain_bucket_separates_abstract_base_from_empty_hook(stubs):
     assert base['bucket'] == hook['bucket'] == 'plain'
     assert base['overridden_elsewhere']
     assert hook['overridden_elsewhere'] == []
-    assert (stubs['plain_con_implementacion_en_otra_clase']
-            + stubs['plain_sin_implementacion_en_el_paquete']
+    assert (stubs['plain_implemented_elsewhere']
+            + stubs['plain_not_implemented_in_package']
             == stubs['by_bucket']['plain'])

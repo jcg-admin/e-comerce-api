@@ -21,7 +21,7 @@ no las dos cifras se leen como contradictorias:
 
 | | censo de presencia | este inventario |
 |---|---|---|
-| unidad | nombre **unico** por archivo | **ocurrencia**, con su clase duenia |
+| unidad | nombre **unico** por archivo | **ocurrencia**, con su clase `owner` |
 | total | 792 simbolos de referencia | **954** crudos · **792** unicos |
 | desglose | una fila por archivo | archivo → clases → metodos → firma |
 
@@ -41,7 +41,7 @@ homonimo entre clases del mismo archivo.
 | `tests/test_inventory_reference_orm.py` | 7 tests, sujetos reales, cuatro anulaciones |
 | `outputs/inventory-odoo19c.json` | el inventario completo con cada firma |
 | `outputs/orm-across-trees.json` | la salida de la sonda de version |
-| `outputs/stub-bodies-odoo19c.json` | los 38 stub, cada uno con su cubo y su duenio |
+| `outputs/stub-bodies-odoo19c.json` | los 38 `stub`, cada uno con su `bucket` y su `owner` |
 
 `declared_symbols`, `signature_of` y `body_class` se **importan** del run del
 censo. No se reescriben: dos extractores del mismo juicio son dos fuentes de
@@ -75,10 +75,10 @@ archivos  lineas   clases  fn_modulo  metodos  crudo  unico
 Firmas: **155** declaran algun parametro opcional · **19** llevan `*args` ·
 **11** tienen kw-only · **13** llevan `**kwargs`. Clases sin metodos: **2**.
 
-Cuerpos `stub`: **38**, y **no** son 38 huecos. Medidos por
+Cuerpos `stub`: **38**, y **no** son 38 metodos sin implementar. Medidos por
 `probe_stub_bodies.py`:
 
-| cubo | n | que es |
+| `bucket` | n | que es |
 |---|---|---|
 | `@typing.overload` | **14** | declaracion de firma para el verificador de tipos; la implementacion real esta en el simbolo siguiente del mismo nombre |
 | otro decorador | **3** | `classproperty`, `api.model`, `api.private` — el decorador cambia lo que el cuerpo significa |
@@ -97,8 +97,7 @@ ocurrencias contra **50** nombres; le sigue `domains.py`, 142 contra 88. Ahi
 vive la diferencia de unidad entera.
 
 *Metrica:* ocurrencias declaradas por AST en `odoo/orm` de `odoo19c`
-(`odoo-tools@abe4040ec1`) — clase, funcion de modulo, o metodo con su clase
-duenia — con la firma completa de cada llamable.
+(`odoo-tools@abe4040ec1`) — clase, funcion de modulo, o metodo con su clase `owner` — con la firma completa de cada llamable.
 
 *Ciega a:* los 4 simbolos que viven dentro de un `if`/`try` de modulo — los
 cuatro en `decorators.py`: la clase `deprecated` (`:18`), sus dos metodos
@@ -109,7 +108,7 @@ metaclase o `setattr`; y al hecho de que `types.py` y `__init__.py` den 0 —
 declaran alias y re-exportan, no estan vacios. Tambien al mapeo archivo-a-
 archivo entre el ORM plano de 18 y el paquete de 19, que no se afirma aqui.
 
-Y, sobre el cubo `plain` de los `stub`, ciega a la **jerarquia real**: el cruce
+Y, sobre el `bucket` `plain` de los `stub`, ciega a la **jerarquia real**: el cruce
 es por NOMBRE dentro del paquete, no por MRO, asi que un homonimo de otra rama
 cuenta como sobreescritura y una subclase que viva en un addon no cuenta como
 ninguna.

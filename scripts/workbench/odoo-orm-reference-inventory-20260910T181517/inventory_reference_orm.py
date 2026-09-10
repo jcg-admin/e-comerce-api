@@ -11,7 +11,7 @@ contradictorias:
 
 - **La UNIDAD.** El censo empareja por NOMBRE y su indice se queda con el
   primer homonimo (``_by_name``), asi que su universo es de nombres UNICOS.
-  Aqui la unidad es la **ocurrencia**, con su clase duenia. Medido: en
+  Aqui la unidad es la **ocurrencia**, con su clase `owner`. Medido: en
   ``fields_relational.py`` son 86 ocurrencias contra 50 nombres; en
   ``domains.py``, 142 contra 88.
 - **El DESGLOSE.** El censo publica una fila por archivo. Aqui cada archivo
@@ -154,8 +154,8 @@ def inventory(root):
     stub = 0
     for entry in files:
         every_callable.extend(entry['functions'])
-        for clase in entry['classes']:
-            every_callable.extend(clase['methods'])
+        for owner in entry['classes']:
+            every_callable.extend(owner['methods'])
     stub = sum(1 for r in every_callable if r['body'] == 'stub')
 
     totals = {
@@ -176,15 +176,18 @@ def inventory(root):
 
 # --- el reporte ------------------------------------------------------------
 
-_HEADER = ('archivo', 'lineas', 'cls', 'fn', 'met', 'crudo', 'unico',
-           'defecto', '*args', 'kwonly', '**kw')
+#: Las etiquetas de la tabla. Van en INGLES porque nombran las claves del
+#: reporte, no prosa: 'default' es el parametro opcional — la forma
+#: castellana 'defecto' es un falso amigo que nombra un error.
+_HEADER = ('file', 'lines', 'cls', 'fn', 'met', 'raw', 'unique',
+           'default', '*args', 'kwonly', '**kw')
 
 
 def _rows(report):
     for entry in report['files']:
         callables = list(entry['functions'])
-        for clase in entry['classes']:
-            callables.extend(clase['methods'])
+        for owner in entry['classes']:
+            callables.extend(owner['methods'])
         shape = _signature_shape(callables)
         yield (entry['name'], entry['lines'], len(entry['classes']),
                len(entry['functions']),
@@ -220,15 +223,15 @@ def render(report, class_detail_min=10):
     lines.append('')
     lines.append(f'clases con >= {class_detail_min} metodos, por archivo:')
     for entry in report['files']:
-        grandes = [c for c in entry['classes']
+        large = [c for c in entry['classes']
                    if len(c['methods']) >= class_detail_min]
-        if not grandes:
+        if not large:
             continue
         lines.append(f"  {entry['name']}")
-        for clase in sorted(grandes, key=lambda c: -len(c['methods'])):
+        for owner in sorted(large, key=lambda c: -len(c['methods'])):
             lines.append(
-                f"    {clase['name']:<34} {len(clase['methods']):>4} metodos"
-                f"   :{clase['lineno']}")
+                f"    {owner['name']:<34} {len(owner['methods']):>4} methods"
+                f"   :{owner['lineno']}")
     return lines
 
 
@@ -250,7 +253,7 @@ def main(argv=None):
     destination.write_text(
         json.dumps(report, indent=1, ensure_ascii=False) + '\n', encoding='utf-8')
 
-    print(f'raiz: {root}')
+    print(f'root: {root}')  # nombra la clave del reporte, no es prosa
     print('\n'.join(render(report)))
     print(f'\nJSON con todas las firmas: {destination}')
     return 0

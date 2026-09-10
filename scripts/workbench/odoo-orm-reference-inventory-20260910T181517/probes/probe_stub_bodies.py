@@ -11,13 +11,13 @@ explicacion con forma de medicion, que es el defecto que
 Lo que descubre, y no es lo que la frase decia
 -----------------------------------------------
 El discriminador no es la prosa sino el **decorador**. Un metodo con
-``@typing.overload`` no es un hueco: es una **declaracion de firma** para el
+``@typing.overload`` no es un `stub` sin implementar: es una **declaracion de firma** para el
 verificador de tipos, cuyo cuerpo es `...` por construccion del lenguaje, y su
 implementacion real esta en el simbolo siguiente del mismo nombre. Contarlo
 como «abstracto» confunde el significante (cuerpo vacio) con el significado
 (que hace el simbolo).
 
-Quedan tres cubos, y el veredicto de cada uno sale del decorador o del duenio:
+Quedan tres `bucket`, y el veredicto de cada uno sale del decorador o del `owner`:
 
 - ``overload`` — firma de tipo; la implementacion existe al lado.
 - ``other_decorator`` — el decorador cambia lo que el cuerpo significa
@@ -27,16 +27,16 @@ Quedan tres cubos, y el veredicto de cada uno sale del decorador o del duenio:
   subclase implementa y el hook de extension que la fuente deja vacio a
   proposito, y el discriminador entre los dos **si** es medible: si otra clase
   del mismo paquete declara ese nombre con cuerpo sustantivo, el `stub` es la
-  base de una jerarquia; si nadie lo declara, es un hueco que el consumidor
-  llena o no llena nunca. Eso es lo que ``overridden_elsewhere`` publica.
+  base de una jerarquia; si nadie lo declara, es un `stub` que el consumidor
+  implementa o no implementa nunca. Eso es lo que ``overridden_elsewhere`` publica.
 
 *Metrica:* cuerpo `stub` segun ``body_class`` del extractor del censo, repartido
-por decorador; y para el cubo ``plain``, si el nombre reaparece con cuerpo
+por decorador; y para el `bucket` ``plain``, si el nombre reaparece con cuerpo
 sustantivo en otra clase de ``odoo/orm``.
 *Ciega a:* la jerarquia real — el cruce es por NOMBRE dentro del paquete, no por
 MRO, asi que un homonimo de otra rama cuenta como sobreescritura y una
 subclase que viva fuera de ``odoo/orm`` (en un addon) no cuenta como ninguna.
-Por eso el cubo se publica con su duenio y su linea: el juicio final se hace con
+Por eso el `bucket` se publica con su `owner` y su linea: el juicio final se hace con
 la cita delante, no con el conteo solo.
 """
 import importlib.util
@@ -60,7 +60,7 @@ _inv = _load('_stub_inventory', RUN_DIR / 'inventory_reference_orm.py')
 
 
 def _bucket(record):
-    """El cubo de un `stub`, decidido por su decorador."""
+    """El `bucket` de un `stub`, decidido por su decorador."""
     decorators = record['decorators']
     if any(d in ('overload', 'typing.overload') for d in decorators):
         return 'overload'
@@ -68,10 +68,10 @@ def _bucket(record):
 
 
 def _substantive_names(report):
-    """``{nombre: [duenios]}`` de los llamables con cuerpo sustantivo.
+    """``{nombre: [owner]}`` de los llamables con cuerpo sustantivo.
 
     Es el otro lado del cruce: contra este indice se pregunta si un `stub`
-    ``plain`` es la base de una jerarquia o un hueco sin implementacion.
+    ``plain`` es la base de una jerarquia o un `stub` que nadie implementa.
     """
     index = {}
     for entry in report['files']:
@@ -86,7 +86,7 @@ def _substantive_names(report):
 
 
 def classify(alias='odoo19c'):
-    """Los cuerpos `stub` del ORM de un arbol, repartidos en sus tres cubos."""
+    """Los cuerpos `stub` del ORM de un arbol, repartidos en sus tres `bucket`."""
     report = _inv.inventory(_inv.orm_root(alias))
     substantive = _substantive_names(report)
     stubs = []
@@ -116,9 +116,9 @@ def classify(alias='odoo19c'):
         'root': str(_inv.orm_root(alias)),
         'total': len(stubs),
         'by_bucket': dict(Counter(s['bucket'] for s in stubs)),
-        'plain_con_implementacion_en_otra_clase':
+        'plain_implemented_elsewhere':
             sum(1 for s in plain if s['overridden_elsewhere']),
-        'plain_sin_implementacion_en_el_paquete':
+        'plain_not_implemented_in_package':
             sum(1 for s in plain if not s['overridden_elsewhere']),
         'by_file': dict(Counter(s['file'] for s in stubs)),
         'by_owner': dict(Counter(s['owner'] for s in stubs)),
@@ -139,13 +139,13 @@ def main(argv=None):
     print(f'{alias}: {report["total"]} cuerpos stub en {report["root"]}\n')
     for bucket, count in sorted(report['by_bucket'].items(), key=lambda p: -p[1]):
         print(f'  {bucket:<16}{count:>4}')
-    print('\npor duenio:')
+    print('\npor owner:')
     for owner, count in sorted(report['by_owner'].items(), key=lambda p: (-p[1], p[0])):
         print(f'  {owner:<24}{count:>4}')
     print(f'\nde los plain: '
-          f'{report["plain_con_implementacion_en_otra_clase"]} tienen ese nombre'
+          f'{report["plain_implemented_elsewhere"]} tienen ese nombre'
           f' implementado en otra clase del paquete, '
-          f'{report["plain_sin_implementacion_en_el_paquete"]} no')
+          f'{report["plain_not_implemented_in_package"]} no')
     print('\ncada uno:')
     for stub in report['stubs']:
         marca = ','.join(stub['decorators']) or '-'
