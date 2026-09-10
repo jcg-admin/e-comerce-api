@@ -1,4 +1,4 @@
-# Deuda heredada de identificadores en español (tarea #147).
+# Deuda heredada de identificadores en español (TASK-API-0396).
 # Congelada por check_identifier_language.py --write-baseline.
 # Un identificador NUEVO no entra aquí: se escribe en inglés.
 addons/account/controllers/views.py::codigo
