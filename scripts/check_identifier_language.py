@@ -39,11 +39,11 @@ def thyrox_gate():
     mismo resultado que sin declarar nada)."""
     declared = os.environ.get('THYROX_ROOT')
     if declared:
-        gate = pathlib.Path(declared) / 'src' / 'gates' / 'check_identifier_language.py'
+        gate = pathlib.Path(declared) / 'src' / 'verify' / 'check_identifier_language.py'
         return gate if gate.is_file() else None
     # Clon hermano: <arbol>/thyrox junto a <arbol>/kaupamex-api — SOLO
     # cuando THYROX_ROOT no se declaró en absoluto.
-    gate = HERE.parents[1] / 'thyrox' / 'src' / 'gates' / 'check_identifier_language.py'
+    gate = HERE.parents[1] / 'thyrox' / 'src' / 'verify' / 'check_identifier_language.py'
     return gate if gate.is_file() else None
 
 
