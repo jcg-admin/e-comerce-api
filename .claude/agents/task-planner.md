@@ -1,7 +1,6 @@
 ---
 name: task-planner
 description: "Use when planning NEW work from scratch — breaks work into T-NNN tasks. NEVER executes. Descompone trabajo en tareas atómicas con IDs trazables. Usar cuando el usuario quiere planificar un feature, bug fix, refactoring, o cualquier trabajo que requiera más de un paso. Produce task-plan.md con checkboxes T-NNN. NUNCA ejecuta — solo planifica. Do NOT use when consolidating existing analysis outputs (use task-synthesizer instead)."
-async_suitable: true  # Planning-only — writes WP artefacts, safe for background
 tools:
   - Read
   - Write

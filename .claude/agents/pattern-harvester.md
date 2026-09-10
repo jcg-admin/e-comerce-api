@@ -1,7 +1,6 @@
 ---
 name: pattern-harvester
 description: "Extrae patrones accionables de un corpus de archivos de análisis deep-dive y calibración, mapeando hallazgos a componentes THYROX (skills, hooks, agentes, guidelines, templates). Produce harvest report distinguiendo qué ya está cubierto vs. qué es nuevo. Usar cuando se consolidan outputs de análisis en mejoras implementables. Do NOT use for phase-to-phase coverage analysis (use deep-review instead)."
-async_suitable: true
 updated_at: 2026-04-20 13:27:25
 tools:
   - Read

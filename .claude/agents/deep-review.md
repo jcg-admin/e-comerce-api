@@ -1,7 +1,6 @@
 ---
 name: deep-review
 description: "Use when analyzing coverage between consecutive WP phases, or analyzing architectural patterns in external repos/docs. Analiza cobertura entre artefactos de fases consecutivas del WP, o profundidad de referencias externas. Usar cuando el usuario pide un deep-review antes de avanzar de Phase N a Phase N+1, o cuando quiere analizar patrones arquitectónicos en documentación externa (README, specs, repos). Do NOT use when harvesting patterns from a corpus of analysis files (use pattern-harvester instead)."
-async_suitable: true  # Read-only analysis — safe for run_in_background=true invocation
 updated_at: 2026-04-20 13:27:25
 tools:
   - Read

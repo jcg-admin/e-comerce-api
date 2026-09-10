@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# pre-push — stub. El mecanismo vive en thyrox.
+#
+#     Canonical owner: thyrox: src/verify/check_pushed_branch.py
+#
+# Corre EL GATE 3 y sólo ése. `thyrox/src/verify/pre-push.sh` compone tres, y
+# los dos primeros —unicidad de etiqueta de hallazgo y artefactos mínimos por
+# iniciativa— miden `source/gestion/pm/`, que es el árbol documental de
+# kaupamex-docs y no existe aquí. Componerlos en este clon los pondría a medir
+# un directorio ausente y a publicar un verde sobre nada.
+#
+# El gate 3 sí es universal: mide el DESTINO del push, no el contenido del
+# árbol. `git push -u origin <literal>` nombra la rama por una cadena tecleada;
+# si esa rama existe y está al día, git responde «Everything up-to-date» y el
+# trabajo se queda sin publicar con una salida que parece correcta.
+#
+# Este archivo estaba AUSENTE en los cuatro clones que no son docs, y
+# `core.hooksPath` estaba sin fijar en cinco de seis: el gate existía y no
+# corría en ninguno de ellos. Se activa con `bash scripts/install-hooks.sh`.
+set -uo pipefail
+
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONSUMIDOR="$(dirname "$AQUI")"
+
+# El dueño: la variable si está declarada; si no, el hermano `thyrox/`
+# ascendiendo. Un clon fuera del árbol no tiene hermano — por eso la variable
+# es la escotilla.
+DUENO=""
+if [ -n "${THYROX_ROOT:-}" ]; then
+    DUENO="$THYROX_ROOT/src/verify/check_pushed_branch.py"
+else
+    NIVEL="$AQUI"
+    while [ "$NIVEL" != "/" ]; do
+        if [ -f "$NIVEL/thyrox/src/verify/check_pushed_branch.py" ]; then
+            DUENO="$NIVEL/thyrox/src/verify/check_pushed_branch.py"; break
+        fi
+        NIVEL="$(dirname "$NIVEL")"
+    done
+fi
+
+if [ -z "$DUENO" ] || [ ! -f "$DUENO" ]; then
+    cat >&2 <<'MSG'
+pre-push REHUSADO — no se encontró thyrox/src/verify/check_pushed_branch.py.
+
+No se emite un veredicto: un gate que no puede medir no autoriza el push. Su
+silencio se leería como «la rama correcta va en el push», y no se midió.
+
+Declarar THYROX_ROOT, o clonar thyrox junto a los repos de kaupamex.
+Emergencia: `git push --no-verify` (y anotar el motivo en el progreso).
+MSG
+    exit 2
+fi
+
+exec python3 "$DUENO" "$CONSUMIDOR"

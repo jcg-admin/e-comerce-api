@@ -19,17 +19,19 @@ updated_at: 2026-07-17 19:33:06
 - **Producto / plataforma: Kaupamex.** Es el **operador L0**: un SaaS
   multi-empresa que hospeda a empresas cliente para gestionar su ecommerce +
   ERP + CRM, con cobro por modulo + renta mensual. El nombre del repo coincide
-  con el operador L0 a proposito. Dentro del codigo: bases `kaupamex_core` /
-  `kaupamex_core_qa`, rol `django_user`, `SYSTEM_COMPANY_CODE = 'kaupamex_global'`,
+  con el operador L0 a proposito. Dentro del codigo: bases `kaupamex_db` /
+  `kaupamex_qa`, rol `django_user`, `SYSTEM_COMPANY_CODE = 'kaupamex_global'`,
   env files en `src/.env`, punto de entrada `kaupamex-bin`.
 
-- **PracticaYoruba es UNA empresa L1, no el producto.** Es el L1 de ejemplo
-  (insignia), no el operador de plataforma ni "el producto" como un todo.
+- **Una empresa L1 no es el producto.** Un L1 es una `Company` cliente que
+  la plataforma hospeda, no el operador ni "el producto" como un todo.
   **En prosa no se usa "founder"** — implica que fundo u opera la plataforma,
   que es exactamente lo contrario (ver `terminologia-l0-company.md`).
+  **El L1 tampoco se nombra en prosa** desde el barrido del 2026-09-05: se
+  dice "la empresa L1", sin nombre propio.
 
 **El L1 ya no se nombra en codigo (DEC-3 de `tenants-sin-clases-en-codigo`,
-2026-08-05).** La constante `FOUNDER_COMPANY_CODE = 'practicayoruba'` **fue
+2026-08-05).** La constante `FOUNDER_COMPANY_CODE`, cuyo valor nombraba al L1, **fue
 retirada**: la empresa inicial se declara en config (`BOOTSTRAP_COMPANY_CODE`
 / `BOOTSTRAP_COMPANY_NAME`, ambas con `default=''`) y la crea
 `kaupamex-bin company_create`. Con esas claves vacias no se siembra ninguna
@@ -45,11 +47,28 @@ Regla de clasificacion de config: infra/ops → L0 (Kaupamex); per-empresa
 (contacto, newsletter, remitente transaccional) → L1/L3 (`CompanySetting`).
 Ver DEC-KX-05 (iniciativa `plataforma-kaupamex`).
 
-Una iniciativa cuyo slug contiene `practicayoruba` (ej.
-`crear-practicayoruba-db`) **no es legacy** — documenta trabajo sobre esa
-empresa L1. Lo que **si** es drift, y se corrige al encontrarlo, es
-`practicayoruba` en **infraestructura**: nombres de base, rutas de despliegue,
-dominios de plataforma. Esos son L0 y llevan `kaupamex`.
+**El barrido del 2026-09-05 retiro el nombre del L1 de los cinco repos** —
+3972 sustituciones, por directiva del ejecutor. Lo unico que lo conserva, a
+proposito, es la **evidencia fechada** (hallazgos, analisis, progreso, audits,
+lecciones) y las **cinco iniciativas cuyo slug lo lleva** —
+`crear-practicayoruba-db`, `integrar-practicayoruba-db-api`,
+`crear-practicayoruba-server`, `configurar-red-dmz-practicayoruba-server` y
+`analizar-impacto-renombrar-practicayoruba-a-src`— con **37 archivos** que lo
+llevan en el nombre. Fuera de esos dos casos, el nombre del L1 no aparece.
+
+**Esas cinco NO se renombran: se marcan `deprecated`** (directiva del ejecutor
+2026-09-05; el identificador va en ingles, igual que el `DEPRECATED:` de los
+guiones). Cada `index.rst` abre con `.. deprecated:: 2026-09-05`, que declara
+que **lo deprecated es el slug, no el trabajo**: las cinco quedaron
+`completada` y siguen vigentes. No se abre trabajo nuevo bajo ellas; una
+sucesora se nombra segun `terminologia-l0-company`.
+
+Renombrarlas romperia **17 `:doc:` alojados en `audits/`**, que es evidencia
+congelada — medido, no supuesto: los toctree de iniciativas usan `:glob:` (0
+entradas por nombre) y **ninguna** de sus 35 etiquetas se cita con `:ref:`
+desde fuera. La version anterior de este parrafo decia "4 slugs", "24
+archivos" y "renombrarlos rompe rutas y `:ref:` vivos": las dos cifras y la
+razon eran falsas. Ver H-DOCS-1051.
 
 **Nota de adaptacion (2026-05-19):** este archivo proviene del template
 THYROX usado en IACT-docs. Para kaupamex se decidio **no importar**
@@ -139,7 +158,7 @@ es buscable, indexable y publicable.
 
 ## Tech-stack — Stack confirmado
 
-Stack del monorepo (parent + 5 submodulos):
+Stack del multi-repo (5 repositorios hermanos):
 
 - **api/**: Django 6.0.5 + DRF 3.16.1, psycopg[binary] >=3.2, simplejwt 5.5.1,
   drf-spectacular 0.29.0, pytest + pytest-django + factory-boy, mercadopago SDK.
@@ -272,11 +291,20 @@ Agent(description="ANÁLISIS DE COBERTURA...", ...)
 
 ## Configuración del Proyecto
 
-adr_path_doc: docs/source/gestion/decisiones/        # DEC-DOC: decisiones de documentacion
-adr_path_api: docs/source/backend/adr/               # ADRs de producto, capa backend
-adr_path_ui:  docs/source/frontend/adr/              # ADRs de producto, capa frontend
-pm_root:      docs/source/gestion/pm/                # Project management raiz; subdivide por submodulo
-submodulos:   [api, db, docs, server, ui]            # Cada uno tiene su gestion bajo pm_root/<submodulo>/
+adr_path_doc:    docs/source/gestion/decisiones/     # DEC-DOC: decisiones de documentacion
+adr_path_api:    docs/source/backend/adr/           # ADRs de producto, capa backend
+adr_path_ui:     docs/source/frontend/adr/          # ADRs de producto, capa frontend
+adr_path_thyrox: docs/source/thyrox/adr/            # ADRs de la IMPLEMENTACION de THYROX (ADR-THYROX-001)
+pm_root:         docs/source/gestion/pm/            # Project management raiz; subdivide por raiz de trabajo
+submodulos:      [api, db, docs, server, ui, thyrox] # Cada una tiene su gestion bajo pm_root/<raiz>/
+
+# La clave `submodulos:` nombra mal lo que enumera, y se declara la deuda en vez
+# de pagarla aqui. Ninguna de las seis es un submodulo: no hay superproyecto
+# desde 2026-08-07 (`gitlink-bump-gate.md`), asi que no hay gitlink que las haga
+# submodulos de nada — son clones hermanos. Y `thyrox` ademas no es una capa del
+# producto: es su PROVEEDOR de metodologia, y los cinco kaupamex-* son sus
+# consumidores. Lo que la clave enumera de verdad son las RAICES DE TRABAJO que
+# el arbol de docs documenta. Ver ADR-THYROX-001; el renombre es la tarea #169.
 
 ## Glosario
 

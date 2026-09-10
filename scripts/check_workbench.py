@@ -43,24 +43,83 @@ Uso::
 """
 import argparse
 import json
+import os
 import pathlib
 import sys
 
-REPO = pathlib.Path(__file__).resolve().parent.parent
-WORKBENCH = REPO / 'scripts' / 'workbench'
-SCHEMA = WORKBENCH / 'manifest_schema.json'
+HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parent
 
 #: Los archivos del propio banco, que no son piezas de trabajo.
 BENCH_FILES = {'README.md', 'manifest_schema.json'}
 
 
-def required_keys(schema_path=SCHEMA):
+def thyrox_root():
+    """Donde vive el proveedor — variable declarada, luego clon hermano.
+
+    Mismo mecanismo que ``check_identifier_language.py`` ya usa en este
+    directorio; no se inventa otro. Si ``THYROX_ROOT`` SE DECLARA es la UNICA
+    fuente: una declarada-e-inexistente que cayera por detras al hermano
+    volveria decorativa la variable.
+    """
+    declared = os.environ.get('THYROX_ROOT')
+    if declared:
+        root = pathlib.Path(declared)
+        return root if (root / 'src' / 'workbench' / 'paths.py').is_file() else None
+    sibling = REPO.parent / 'thyrox'
+    return sibling if (sibling / 'src' / 'workbench' / 'paths.py').is_file() else None
+
+
+def bench_root():
+    """El hogar del banco, DECLARADO por el consumidor — no derivado.
+
+    Hasta la tarea #247 esta raiz se componia con
+    ``pathlib.Path(__file__).resolve().parent.parent / 'scripts' / 'workbench'``
+    y se LIGABA en la firma de ``work_dirs``, asi que ni reasignando el modulo
+    se movia. Consecuencia medida: con la raiz movida el gate publicaba
+    ``0 incumplidor(es) (alcance medido: 0 pieza(s))`` y **exit 0** — el
+    denominador salvaba al lector humano, el codigo de salida no discriminaba
+    «no hay defectos» de «no medi nada».
+
+    Hoy la resuelve ``thyrox: src/workbench/paths.py::workbench_dir``, que
+    consulta en este orden: ``THYROX_WORKBENCH_API`` (la familia por clon) ->
+    ``THYROX_WORKBENCH_DIR`` (la global) -> el default de la cadena declarada.
+    En ESTE arbol la primera esta declarada en el ``.env`` de la raiz y apunta
+    a ``scripts/workbench``, que es donde el banco vive de verdad — y por eso
+    no se llama ``eventos``: la palabra ya nombra otras dos cosas aqui.
+
+    ``HERE`` se pasa como punto de partida, no como aritmetica de ruta: lo que
+    identifica es EL CLON al que este archivo pertenece, ascendiendo hasta
+    reconocerlo por su prefijo. Eso sobrevive a que el archivo baje de nivel;
+    componer el hogar de un dato sumando ``..`` no.
+
+    Sin thyrox alcanzable NO se emite veredicto: rehusa con exit 2.
+    """
+    root = thyrox_root()
+    if root is None:
+        print('ERROR — no se encontro thyrox/src/workbench/paths.py. Declara '
+              'THYROX_ROOT o clona thyrox como hermano. No se emite conteo: '
+              'un 0 aqui seria un verde falso.', file=sys.stderr)
+        raise SystemExit(2)
+    sys.path.insert(0, str(root / 'src'))
+    from workbench.paths import workbench_dir  # noqa: E402
+    return workbench_dir(HERE)
+
+
+def schema_of(root):
+    """El esquema vive EN el banco, asi que se deriva de su raiz."""
+    return root / 'manifest_schema.json'
+
+
+def required_keys(schema_path=None):
     """Las obligatorias salen del esquema, no de una copia en este archivo.
 
     Duplicar la lista aqui crearia la segunda fuente de verdad que
     ``calibration-verified-numbers.md`` prohibe: el esquema y el gate
     divergirian y los dos seguirian dando un numero.
     """
+    if schema_path is None:
+        schema_path = schema_of(bench_root())
     if not schema_path.is_file():
         # Rehusa con codigo propio en vez de medir con una lista inventada:
         # un 0 sin esquema no distingue "todo cumple" de "no pude medir".
@@ -70,8 +129,10 @@ def required_keys(schema_path=SCHEMA):
     return list(json.loads(schema_path.read_text())['required'])
 
 
-def work_dirs(root=WORKBENCH):
+def work_dirs(root=None):
     """Los subdirectorios que son piezas de trabajo."""
+    if root is None:
+        root = bench_root()
     if not root.is_dir():
         return []
     return sorted(d for d in root.iterdir()
@@ -102,14 +163,27 @@ def offences_of(directory, keys):
     return found
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--strict', action='store_true',
                         help='exit 1 si hay piezas de trabajo incumplidoras')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    keys = required_keys()
-    directories = work_dirs()
+    root = bench_root()
+    # Un banco presente y VACIO es un cero legitimo: un clon recien hecho no
+    # tiene piezas todavia. Un banco que NO EXISTE es otra cosa — nadie midio
+    # nada. Colapsarlos es el sub-patron D de
+    # `metrica-decide-la-conclusion.md`, y era lo que este gate hacia: con la
+    # raiz movida publicaba `0 incumplidor(es)` y salia 0.
+    if not root.is_dir():
+        print(f'ERROR — el banco declarado no existe: {root}. Declara '
+              'THYROX_WORKBENCH_API (o THYROX_WORKBENCH_DIR) con el hogar '
+              'real. No se emite conteo: un 0 aqui no distinguiria «ninguna '
+              'pieza incumple» de «no medi nada».', file=sys.stderr)
+        raise SystemExit(2)
+
+    keys = required_keys(schema_of(root))
+    directories = work_dirs(root)
     offenders = {d: found for d in directories
                  if (found := offences_of(d, keys))}
 

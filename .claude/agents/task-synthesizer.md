@@ -1,7 +1,6 @@
 ---
 name: task-synthesizer
 description: "Consolida outputs existentes de análisis (cluster reports, gap analyses) en un task-plan: deduplica hallazgos, resuelve conflictos, construye el DAG correcto y asigna IDs T-NNN continuando el plan existente. Usar cuando se consolidan outputs de pattern-harvester o deep-dive en blocks listos para ejecutar. Do NOT use for initial planning from scratch (use task-planner instead)."
-async_suitable: true
 updated_at: 2026-04-20 13:27:25
 tools:
   - Read

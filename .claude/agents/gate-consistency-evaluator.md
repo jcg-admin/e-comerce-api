@@ -5,7 +5,6 @@ tools:
   - Read
   - Glob
   - Grep
-async_suitable: true
 updated_at: 2026-04-20 13:54:00
 ---
 

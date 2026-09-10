@@ -36,4 +36,4 @@ SÍ existe) y **`teammate-message`** con `teammate_id`, que ninguna regla
 nombraba. El corpus `ccb` bloquea con un test que su formateador de buzón **no
 escapa el cuerpo**: un par que emite la etiqueta de cierre parte el envoltorio.
 Nuestro caso es DESCONOCIDO — exige sonda de conducta (#921); el censo del
-canal es la #922. Censo: `.claude/scripts/censo_sobres_mensaje.py` (en docs).
+canal es la #922. Censo: `.claude/scripts/census_message_envelopes.py` (en docs).

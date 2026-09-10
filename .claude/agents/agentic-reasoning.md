@@ -15,7 +15,6 @@ disallowedTools:
   - Bash(uv run pytest *)
   - Bash(pytest *)
   - Bash(python -m pytest *)
-async_suitable: false
 updated_at: 2026-04-20 12:47:27
 ---
 
