@@ -4199,6 +4199,49 @@ class BaseModel(Model):
             pass
         return NotImplemented
 
+    def __le__(self, other):
+        """ ≙ ``:6625`` """
+        try:
+            if self._name == other._name:
+                # these are much cheaper checks than a proper subset check, so
+                # optimise for checking if a null or singleton are subsets of a
+                # recordset
+                if not self or self in other:
+                    return True
+                return set(self._ids) <= set(other._ids)
+        except AttributeError:
+            # silent OK because el operando no es un recordset — misma razon
+            # que en ``__lt__``: la fuente cae deliberadamente a
+            # ``NotImplemented`` para que Python pruebe el reflejado.
+            pass
+        return NotImplemented
+
+    def __gt__(self, other):
+        """ ≙ ``:6638`` """
+        try:
+            if self._name == other._name:
+                return set(self._ids) > set(other._ids)
+        except AttributeError:
+            # silent OK because el operando no es un recordset — misma razon
+            # que en ``__lt__``: la fuente cae deliberadamente a
+            # ``NotImplemented`` para que Python pruebe el reflejado.
+            pass
+        return NotImplemented
+
+    def __ge__(self, other):
+        """ ≙ ``:6646`` """
+        try:
+            if self._name == other._name:
+                if not other or other in self:
+                    return True
+                return set(self._ids) >= set(other._ids)
+        except AttributeError:
+            # silent OK because el operando no es un recordset — misma razon
+            # que en ``__lt__``: la fuente cae deliberadamente a
+            # ``NotImplemented`` para que Python pruebe el reflejado.
+            pass
+        return NotImplemented
+
     # === recorrido y lectura ==============================================
 
     def __iter__(self):
@@ -4568,17 +4611,107 @@ class BaseModel(Model):
     def sorted(self, key=None, reverse=False):
         """Return the recordset ``self`` ordered by ``key``. — ≙ ``:6262``
 
-        La rama de cadena y la de ``None`` exigen ``_sorted_order_to_function``
-        (``odoo19c: :6294-6344``), sin portar — tarea **TASK-API-0400**.
+        Las tres ramas de la fuente, y ninguna más: ``key`` invocable se pasa
+        tal cual al ``sorted`` de CPython; ``key`` cadena y ``key`` ``None``
+        pasan antes por :meth:`_sorted_order_to_function`, que construye la
+        función de clave.
         """
         if len(self) < 2:
             return self
-        if key is None or isinstance(key, str):
-            raise NotImplementedError(
-                "sorted() por cadena o por _order exige _sorted_order_to_function, "
-                "sin portar (odoo19c: odoo/orm/models.py:6294-6344) — TASK-API-0400")
+        if isinstance(key, str):
+            key = self._sorted_order_to_function(key)
+        elif key is None:
+            key = self._sorted_order_to_function(self._order)
         ids = tuple(item.id for item in sorted(self, key=key, reverse=reverse))
         return self._from_ids(self.env, ids, self._prefetch_ids)
+
+    def _sorted_order_to_function(self, order):
+        """La función de clave que ``sorted()`` consume. — ≙ ``:6294-6344``
+
+        **No ordena.** Construye la ``key``; el orden estable lo pone Timsort,
+        que el stack trae hecho. Lo que hay que construir es el envoltorio que
+        hace comparables valores de tipos mixtos con ``None``, y ése es
+        :class:`ReversibleComparator`, ya portado.
+
+        Las cinco ramas de ``order_to_function``, en el orden de la fuente:
+
+        1. ``regex_order`` no casa → ``ValueError``.
+        2. ``many2one`` sin propiedad, o con ``.id`` → **recurre** al comodelo
+           con su ``_order``, protegido de un ciclo por la clave de contexto
+           ``__m2o_order_seen_sorted``.
+        3. otro campo relacional → ``ValueError``.
+        4. ``boolean`` → el getter tal cual: ``False`` es un valor legítimo
+           que debe ordenar antes que ``True``, no un nulo.
+        5. el resto → el mismo getter con ``False`` normalizado a ``None``.
+
+        La regla de los nulos es la de PostgreSQL, reproducida en memoria para
+        que ``sorted()`` y ``search()`` no discrepen: sin ``NULLS`` explícito,
+        ``nulls_first = reverse``.
+        """
+        def order_to_function(order_part):
+            order_match = regex_order.match(order_part)
+            if not order_match:
+                raise ValueError(f"Invalid order {order!r} to sort")
+            field_name = order_match['field']
+            property_name = order_match['property']
+            reverse = (order_match['direction'] or '').upper() == 'DESC'
+            nulls = (order_match['nulls'] or '').upper()
+            if nulls:
+                nulls_first = nulls == 'NULLS FIRST'
+            else:
+                nulls_first = reverse
+
+            field = self._fields[field_name]
+            field_expr = f'{field_name}.{property_name}' if property_name else field_name
+            if field.type == 'many2one' and (not property_name or property_name == 'id'):
+                seen = self.env.context.get('__m2o_order_seen_sorted', ())
+                if field in seen:
+                    return lambda _: None
+                # **Adaptación de la divergencia ya declarada en
+                # ``Environment.__getitem__``.** La fuente escribe
+                # ``self.env[field.comodel_name].with_context(...)`` porque allá
+                # ``env[name]`` devuelve ``self.registry[name](self, (), ())``,
+                # o sea un recordset VACÍO. Aquí ``env[name]`` devuelve la
+                # **clase** del modelo —divergencia declarada en su propio
+                # docstring—, y ``with_context`` sobre una clase es un método
+                # sin ligar: ``missing 1 required positional argument: 'self'``.
+                # El recordset vacío se construye aquí, que es lo que la fuente
+                # obtiene de su indexador.
+                comodel = self.env[field.comodel_name]._from_ids(
+                    self.env, (), ()).with_context(
+                    __m2o_order_seen_sorted=frozenset((field, *seen)))
+                func_comodel = comodel._sorted_order_to_function(
+                    property_name or comodel._order)
+
+                def getter(rec):
+                    value = rec[field_name]
+                    if not value:
+                        return None
+                    return func_comodel(value)
+            elif field.relational:
+                raise ValueError(
+                    f"Invalid order on relational field {order_part!r} to sort")
+            elif field.type == 'boolean':
+                getter = field.expression_getter(field_expr)
+            else:
+                raw_getter = field.expression_getter(field_expr)
+
+                def getter(rec):
+                    value = raw_getter(rec)
+                    return value if value is not False else None
+
+            comparator = functools.partial(
+                ReversibleComparator,
+                reverse=reverse,
+                none_first=nulls_first,
+            )
+            return lambda rec: comparator(getter(rec))
+
+        item_makers = [
+            order_to_function(order_part)
+            for order_part in order.split(',')
+        ]
+        return lambda rec: tuple(fn(rec) for fn in item_makers)
 
     # === existencia =======================================================
 

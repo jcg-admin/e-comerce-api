@@ -885,10 +885,12 @@ def _expression_getter(self, field_expr):
     El caso base sólo sabe leer **el campo entero**; cualquier otra expresión
     la resuelve quien la entienda, sobreescribiendo este método.
 
-    La divergencia de forma: allá el getter es ``self.__get__`` —el descriptor
-    del campo—; aquí un campo de Django no es descriptor de lectura, así que
-    es ``getattr(record, self.name)``. Mismo contrato: dado un registro,
-    devuelve el valor.
+    La divergencia de forma: allá el getter es ``self.__get__`` —el campo *es*
+    su propio descriptor—; aquí el descriptor es otro objeto
+    (:class:`FieldDescriptor`, instalado por :func:`_install_field_descriptor`
+    sobre todo campo), así que el getter es ``getattr(record, self.name)``, que
+    pasa por él. Mismo contrato y mismo cuerpo: dado un registro, devuelve el
+    valor leyendo la caché del ORM.
     """
     if field_expr == self.name:
         return lambda record: getattr(record, self.name)
@@ -1252,19 +1254,16 @@ class FieldDescriptor(DeferredAttribute):
     (:ref:`h-api-1067`). El cuerpo se porta al descriptor; el sitio cambia, el
     comportamiento no.
 
-    **Por qué se instala SÓLO donde hay ``compute``.** ``DeferredAttribute`` no
-    declara ``__set__``: es un descriptor de NO datos, así que
-    ``instance.__dict__`` gana y su ``__get__`` sólo se consulta cuando el valor
-    falta. Ese ``__dict__`` **es** la rama de acierto de caché de la fuente.
-    Declarar ``__set__`` lo convierte en descriptor de datos y entonces toda
-    lectura de todo campo pasa por Python: medido sobre 300 000 lecturas con un
-    cuerpo vacío, **42.6 ns contra 132.9 ns — 3.12×** en el camino más caliente
-    del ORM. Lo que el ``__dict__`` de Django no cubre son las tres ramas que
-    la fuente añade —recálculo pendiente, cómputo al fallar la caché, y el
-    reparto en tres cubos de la escritura— y las tres sólo tienen receptor donde
-    el campo declara ``compute``. Ahí el coste del descriptor es despreciable
-    frente a la llamada al método de cómputo. Una columna llana conserva el
-    camino rápido de Django.
+    **Se instala sobre TODO campo, y por eso aquí no hay ``__set__``.** La
+    fuente consulta ``env.cache`` para todo campo (``:1667``); un puerto que
+    instale el descriptor sólo sobre el calculado tiene dos cachés y un lector
+    que consulta la que no es. ``DeferredAttribute`` no declara ``__set__``: es
+    un descriptor de NO datos, así que ``instance.__dict__`` gana y este
+    ``__get__`` sólo se consulta cuando el valor falta — que es exactamente
+    cuando el recordset, cuyo ``__dict__`` está vacío, necesita la caché del
+    ORM. Medido sobre 300 000 lecturas: el de NO datos cuesta **1.00×** lo que
+    el atributo llano, porque en el camino caliente no se le consulta. La
+    escritura, que sí cuesta **3.24×**, vive en :class:`ComputedFieldDescriptor`.
 
     Precedente propio del árbol: ``_CompanyDependentAttribute``
     (``orm/fields_company_dependent.py:167``) ya porta comportamiento de campo a
@@ -1288,10 +1287,23 @@ class FieldDescriptor(DeferredAttribute):
             if not instance._has_field_access(field, 'read'):
                 instance._check_field_access(field, 'read')
 
-        # ``:1653-1661`` — la rama ``record_len != 1`` NO tiene receptor: aquí
-        # ``instance`` es UNA fila, nunca un recordset de N. ``ensure_one`` está
-        # ausente del árbol por esa misma razón (divergencia de stack ya
-        # declarada en ``orm/utils.py``).
+        # ``:1653-1661`` — la rama de tamaño, y SÍ tiene receptor. Un recordset
+        # ES una instancia del modelo de Django: ``BaseModel._from_ids`` lo
+        # construye con ``object.__new__`` más la terna, así que ``instance``
+        # puede llevar N ids. La terna se lee del **almacén de la instancia** y
+        # no por atributo: una fila real de Django no la tiene, y sobre ella
+        # esta rama no aplica — ``None`` distingue los dos sujetos sin
+        # preguntar por el tipo.
+        own_ids = instance.__dict__.get('_ids')
+        if own_ids is not None and len(own_ids) != 1:
+            if own_ids:
+                # ``:1656-1658`` — que ``ensure_one`` levante la excepción.
+                instance.ensure_one()
+                raise AssertionError('unreachable')
+            # ``:1659-1661`` — recordset vacío: el valor nulo del campo.
+            return field.convert_to_record(
+                field.convert_to_cache(False, instance, validate=False),
+                instance)
 
         if field.compute and getattr(field, 'store', False):
             # ``:1664-1666`` — procesa los cómputos pendientes.
@@ -1418,6 +1430,28 @@ class FieldDescriptor(DeferredAttribute):
         field_cache = field._get_cache(environment)
         return field.convert_to_record(field_cache[record_id], instance)
 
+
+class ComputedFieldDescriptor(FieldDescriptor):
+    """El mismo ``__get__``, más ``__set__`` — ≙ ``Field.__set__`` (``:1807``).
+
+    **Por qué la escritura vive en una subclase y no en la base.**
+    ``DeferredAttribute`` no declara ``__set__``: es un descriptor de NO datos,
+    así que ``instance.__dict__`` gana y su ``__get__`` sólo se consulta cuando
+    el valor falta. Declarar ``__set__`` lo convierte en descriptor de datos, y
+    entonces **toda** lectura de **todo** campo pasa por Python. Medido sobre
+    300 000 lecturas con un cuerpo vacío
+    (``scripts/workbench/two-caches-descriptor-20260911T053450/outputs/``
+    ``descriptor_cost.txt``): el descriptor de NO datos cuesta **1.00×** lo que
+    el atributo llano —22.8 ns contra 22.8 ns, porque nunca se le consulta— y
+    el de datos **3.24×** (73.9 ns). El coste no lo trae el descriptor: lo trae
+    ``__set__``.
+
+    Por eso el reparto es por **capacidad**, no por comodidad: la lectura la
+    necesitan todos los campos —es donde vive la caché del ORM— y la escritura
+    en tres cubos sólo tiene receptor donde el campo declara ``compute``. Ahí el
+    3.24× es despreciable frente a la llamada al método de cómputo.
+    """
+
     def __set__(self, instance, value):
         """≙ ``Field.__set__`` (``:1807-1841``) — el reparto en tres cubos.
 
@@ -1519,27 +1553,39 @@ def _field_contribute_to_class(self, cls, name, private_only=False):
 
 
 def _install_field_descriptor(field, cls):
-    """Cuelga :class:`FieldDescriptor` del campo calculado, y sólo de ése.
+    """Cuelga el descriptor de la fuente sobre el campo, y elige cuál.
 
-    Dos guardas, y ninguna es de comodidad:
+    **Todo campo lee por el descriptor; sólo el calculado escribe por él.** La
+    fuente tiene UNA caché (``env.cache``) y ``Field.__get__`` la consulta
+    siempre, para todo campo (``odoo19c: odoo/orm/fields.py:1667``). Instalarlo
+    sólo sobre el calculado dejaba al puerto con **dos** cachés y un lector que
+    consultaba la que no era: ``_insert_cache`` escribía en la del ORM y una
+    lectura llana caía al ``DeferredAttribute`` de Django, que emite
+    ``refresh_from_db``. Medido sobre un recordset con la caché sembrada
+    (``scripts/workbench/two-caches-descriptor-20260911T053450/outputs/``
+    ``id_resolution_on_recordset.txt``): ``rs.label`` iba a la base y reventaba,
+    mientras ``rs.id`` —que sí tiene descriptor propio, :class:`IdFromIds`—
+    respondía ``7``.
 
-    1. **``compute`` declarado.** Es donde las tres ramas del cuerpo de la
-       fuente tienen trabajo; sobre una columna llana el ``__dict__`` de Django
-       ya hace de acierto de caché, y convertir su descriptor en uno de datos
-       cuesta **3.12×** por lectura (medido en
-       ``scripts/evidence/medicion-211-descriptor.txt``).
+    Las dos guardas que quedan, y ninguna es de comodidad:
+
+    1. **Quién escribe.** ``compute`` declarado → :class:`ComputedFieldDescriptor`
+       (con ``__set__``, descriptor de datos); si no → :class:`FieldDescriptor`
+       (sin ``__set__``, de NO datos, coste medido **1.00×**). El reparto lo
+       justifica el docstring de la subclase.
     2. **El atributo de clase es un ``DeferredAttribute`` PELADO.** Un
        ``ForeignKeyDeferredAttribute`` o un ``_CompanyDependentAttribute`` ya
        son descriptores de datos con su propio camino de lectura y escritura
        portado; sustituirlos rompería la relación o el eje por empresa. Por eso
-       la condición es de tipo exacto, no ``isinstance``.
+       la condición es de tipo exacto, no ``isinstance``. El campo relacional
+       sobre recordset lo cierra su propio sucesor, **TASK-API-0402**.
     """
-    if not getattr(field, 'compute', None):
-        return
     current = cls.__dict__.get(field.attname)
     if type(current) is not DeferredAttribute:
         return
-    setattr(cls, field.attname, FieldDescriptor(field))
+    descriptor = (ComputedFieldDescriptor if getattr(field, 'compute', None)
+                  else FieldDescriptor)
+    setattr(cls, field.attname, descriptor(field))
 
 
 models.Field.contribute_to_class = _field_contribute_to_class
@@ -1991,6 +2037,59 @@ models.Field.type = property(type_for)
 #: patrón vacío devuelve una condición sobre el campo, y uno escalar devuelve
 #: un booleano. Con ``False`` universal el escalar se aplicaba a los dos.
 models.Field.relational = property(lambda self: self.is_relation)
+
+#: ``comodel_name`` — el modelo de los valores de un campo de relacion.
+#:
+#: La fuente lo declara en la base abstracta de los tres campos de relacion
+#: (``odoo19c: odoo/orm/fields_relational.py:36`` — ``comodel_name: str``) y
+#: lo puebla ``_setup_attrs`` al resolver la cadena que el programador escribe
+#: en ``Many2one('res.partner')``.
+#:
+#: Instalado como valor llano por :data:`_CLASS_ATTRIBUTE_DEFAULTS` valia
+#: ``None`` **incluso en un ForeignKey**, que es lo contrario de lo que la
+#: fuente garantiza — medido sobre ``ResUsers._fields['partner']``:
+#: ``type='many2one'``, ``relational=True``, ``comodel_name=None``.
+#:
+#: Aqui el destino lo trae el stack hecho: ``Field.related_model`` es el
+#: modelo apuntado, resuelto por Django cuando la app esta lista. Lo unico que
+#: falta es TRADUCIRLO al vocabulario de la fuente, y eso lo sabe el registro
+#: por nombre: ``registry.name_of`` devuelve el ``_name`` del modelo cuando lo
+#: declara. Sin ``_name`` cae a la etiqueta de Django, que es lo mas cercano a
+#: un identificador estable de modelo que este arbol tiene.
+#:
+#: **La derivacion se queda; el ser de solo lectura se retira** (H-API-1094).
+#: La fuente declara ``comodel_name: str`` como ANOTACION sin valor, asi que
+#: alla no hay descriptor: el nombre lo escribe el ``__init__`` del campo y
+#: vive en el ``__dict__`` de la instancia. Un ``property`` es descriptor de
+#: DATOS —tiene ``__set__``— y por eso ganaba sobre el ``__dict__`` y rehusaba
+#: la asignacion con ``property … has no setter``. Eso rompia la mitad de
+#: escritura de ``setup_related`` (``:645-649``), que asigna los cinco
+#: ``related_attrs`` con ``setattr``.
+#:
+#: Un descriptor NO de datos —solo ``__get__``— reproduce la semantica de la
+#: fuente sin una sola linea de sincronizacion: Python consulta primero el
+#: ``__dict__`` de la instancia, de modo que un valor asignado gana por el
+#: orden de busqueda del lenguaje y la derivacion solo corre cuando no hay
+#: ninguno. La alternativa —``property`` con ``fset`` que escribe ``__dict__``
+#: y ``fget`` que lo lee primero— exige dos sitios que no pueden discrepar.
+class _ComodelName:
+    """El nombre del comodelo, derivado del destino que Django ya resuelve."""
+
+    __slots__ = ()
+
+    def __get__(self, field, owner=None):
+        if field is None:
+            return self
+        if not field.is_relation:
+            return None
+        remote = getattr(field, 'related_model', None)
+        if remote is None or isinstance(remote, str):
+            # Referencia perezosa sin resolver todavia: la cadena que se escribio.
+            return remote
+        return orm_registry.name_of(remote) or remote._meta.label
+
+
+models.Field.comodel_name = _ComodelName()
 
 #: ≙ ``Field._by_type__`` colgado de la clase, como en la fuente.
 models.Field._by_type__ = _by_type__
@@ -3266,17 +3365,13 @@ models.Field.setup_related = _field_setup_related
 #: método ya está colgado.
 
 
-#: ``:774-778`` — de dónde copia ``setup_related`` cada atributo. Son
-#: properties allá y funciones aquí por la misma razón que el resto del
-#: parche: se cuelgan de ``models.Field``, que no se puede reabrir con
-#: ``property`` sin pisar lo que Django ya declare con ese nombre.
-models.Field._related_comodel_name = property(
-    lambda self: getattr(self, 'comodel_name', None))
-models.Field._related_string = property(lambda self: self.string)
-models.Field._related_help = property(lambda self: getattr(self, 'help', None))
-models.Field._related_groups = property(
-    lambda self: getattr(self, 'groups', None))
-models.Field._related_aggregator = property(lambda self: self.aggregator)
+#: ``:774-778`` — los cinco ``_related_*`` los instala el bucle de la seccion
+#: «El campo relacionado y la columna», con ``property(attrgetter(...))``, que
+#: es la forma literal de la fuente. Aqui vivia una SEGUNDA declaracion de los
+#: cinco con lambdas defensivas, que pisaba la primera en silencio: dos fuentes
+#: de verdad para un mismo simbolo, y la que ganaba no era la fiel. Retirada en
+#: H-API-1094; medido antes de retirarla: los cinco atributos de origen existen
+#: siempre en ``models.Field``, asi que el ``attrgetter`` no puede levantar.
 
 
 def _field_setup(self, model):

@@ -266,6 +266,9 @@ def record_ids(records):
     el resto del cuerpo queda igual. Acepta las cuatro formas que el árbol
     produce:
 
+    - un **recordset** que lleva la terna → sus ``_ids`` tal cual, en orden.
+      Es la forma que TASK-API-0397 trajo, y va **primero**: un recordset es
+      también una instancia de modelo, así que la rama de abajo lo capturaría;
     - una instancia de modelo → su ``pk`` (``None`` incluido: un registro sin
       guardar tiene id falsy, que es lo que la fuente llama *nuevo*);
     - un ``QuerySet`` → los ``pk`` de sus filas, en una sola consulta;
@@ -278,6 +281,14 @@ def record_ids(records):
     """
     if records is None:
         return ()
+    # La terna gana sobre la ``pk`` de la fila, y ese orden NO es estetico:
+    # desde TASK-API-0397 un recordset ES una instancia de modelo que puede
+    # portar N ids, asi que la rama de abajo iria al descriptor de ``id`` y
+    # levantaria ``ValueError: Expected singleton``. Esto es, literalmente, el
+    # ``records._ids`` que el docstring promete traducir.
+    own_ids = getattr(records, '_ids', None)
+    if own_ids is not None:
+        return tuple(own_ids)
     if isinstance(records, models.Model):
         return (records.pk,)
     if isinstance(records, models.QuerySet):

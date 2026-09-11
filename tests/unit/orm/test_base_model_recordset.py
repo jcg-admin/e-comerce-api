@@ -81,6 +81,7 @@ el nombre coincide y el comportamiento no, que es el sub-patrón C de
 ``metrica-decide-la-conclusion.md``.
 """
 import collections.abc
+import operator
 
 import pytest
 from django.db import models as django_models
@@ -318,6 +319,66 @@ class TestIdentity:
 
     def test_lt_compares_as_sets(self, empty):
         assert empty.browse([7]) < empty.browse([7, 18])
+
+    def test_le_is_true_for_the_empty_recordset(self, empty):
+        # ``if not self or self in other: return True`` — atajo 1 de :6625.
+        assert empty.browse([]) <= empty.browse([7])
+
+    def test_le_is_true_for_a_singleton_the_other_contains(self, empty):
+        # Atajo 2: ``self in other`` pasa por ``__contains__``, que exige
+        # ``len(self) == 1``. Un recordset de 2 NO lo toma y cae al conjunto.
+        assert empty.browse([7]) <= empty.browse([7, 18])
+
+    def test_le_is_true_for_equal_sets_by_the_set_path(self, empty):
+        # Los dos atajos fallan aqui (no esta vacio; ``len`` es 2, asi que
+        # ``__contains__`` da False) y decide ``set(ids) <= set(ids)``.
+        assert empty.browse([7, 18]) <= empty.browse([18, 7])
+
+    def test_le_is_false_when_it_is_not_a_subset(self, empty):
+        assert not (empty.browse([7, 99]) <= empty.browse([7, 18]))
+
+    def test_gt_is_a_strict_superset(self, empty):
+        assert empty.browse([7, 18]) > empty.browse([7])
+
+    def test_gt_is_false_for_equal_sets(self, empty):
+        # Estricto: la referencia usa ``>``, no ``>=`` — :6638.
+        assert not (empty.browse([7, 18]) > empty.browse([18, 7]))
+
+    def test_ge_is_true_against_the_empty_recordset(self, empty):
+        # ``if not other or other in self`` — atajo 1 de :6646, y mide al OTRO.
+        assert empty.browse([7]) >= empty.browse([])
+
+    def test_ge_is_true_for_a_singleton_it_contains(self, empty):
+        assert empty.browse([7, 18]) >= empty.browse([18])
+
+    def test_ge_is_true_for_equal_sets_by_the_set_path(self, empty):
+        assert empty.browse([7, 18]) >= empty.browse([18, 7])
+
+    def test_ge_is_false_when_it_is_not_a_superset(self, empty):
+        assert not (empty.browse([7, 18]) >= empty.browse([7, 99]))
+
+    def test_the_four_comparisons_refuse_another_model(self, ambient, empty):
+        # ``NotImplemented`` en los cuatro: Python prueba el reflejado y
+        # levanta ``TypeError``. El control DISCRIMINA porque un ``return
+        # False`` en vez de ``NotImplemented`` pasaria los casos de arriba y
+        # caeria aqui.
+        other = OtherProbe._from_ids(ambient, (7,), (7,))
+        mine = empty.browse([7])
+        for operation in (operator.lt, operator.le, operator.gt, operator.ge):
+            with pytest.raises(TypeError):
+                operation(mine, other)
+
+    def test_the_four_comparisons_are_declared_here_not_inherited(self):
+        # Control ESTRUCTURAL, y su razon esta medida: el control de conducta
+        # NO discrimina ``__gt__``. Retirando los tres operadores caen los 8
+        # casos de ``le_``/``ge_`` y los 2 de ``gt_`` SOBREVIVEN, porque Python
+        # refleja ``a > b`` a ``b.__lt__(a)`` y ``__lt__`` sigue ahi. Un
+        # control que no puede fallar es un adorno (sub-patron D de
+        # ``metrica-decide-la-conclusion``), asi que lo que se mide aqui es el
+        # PORTE — que los cuatro esten declarados, como en :6617-6654— y no la
+        # conducta, que ya miden los casos de arriba.
+        for name in ('__lt__', '__le__', '__gt__', '__ge__'):
+            assert name in BaseModel.__dict__, name
 
     def test_repr_is_name_then_ids(self, empty):
         assert repr(empty.browse([7, 18])) == "orm.recordset.probe(7, 18)"
