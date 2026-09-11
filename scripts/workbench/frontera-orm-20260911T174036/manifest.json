@@ -13,7 +13,7 @@
   ],
   "reproducible": "python3 scripts/census_orm_reference.py --global",
   "outputs": [
-    "salidas/ausentes-por-archivo.txt"
+    "outputs/ausentes-por-archivo.txt"
   ],
   "source": [
     "odoo19c: odoo/orm/fields.py:397 — __set_name__ apenda a owner._field_definitions",

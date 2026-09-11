@@ -12,7 +12,7 @@ python3 scripts/census_orm_reference.py --global
 
 **28 de 209** símbolos de nivel superior de `odoo/orm/` no están en `src/orm/`
 (modo global: corrige la sobre-cuenta por archivo buscando el nombre en toda la
-raíz). El desglose por nombre está en `salidas/ausentes-por-archivo.txt`.
+raíz). El desglose por nombre está en `outputs/ausentes-por-archivo.txt`.
 
 Dos cúmulos concentran **19 de los 28**: `models.py` (12) y
 `model_classes.py` (7) — que son las tareas #318 y #319.

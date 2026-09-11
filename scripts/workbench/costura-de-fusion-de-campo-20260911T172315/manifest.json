@@ -9,7 +9,7 @@
   ],
   "reproducible": "PYTHONPATH=src DJANGO_SETTINGS_MODULE=config.settings.testing uv run python scripts/workbench/costura-de-fusion-de-campo-20260911T172315/probe_merge_seam.py",
   "outputs": [
-    "salidas/veredicto-20260911T172315.txt"
+    "outputs/veredicto-20260911T172315.txt"
   ],
   "source": [
     "odoo19c: odoo/orm/fields.py:414-430 — _get_attrs y su regla attrs.clear() por incompatibilidad de tipo",

@@ -14,10 +14,10 @@
   ],
   "reproducible": "PYTHONPATH=src DJANGO_SETTINGS_MODULE=config.settings.testing uv run python scripts/workbench/recoleccion-de-definiciones-20260911T175852/probe_declarations_survive.py",
   "outputs": [
-    "salidas/veredicto-inicial.txt",
-    "salidas/veredicto-que-guarda.txt",
-    "salidas/veredicto-el-override-pierde-la-base.txt",
-    "salidas/veredicto-declaraciones.txt"
+    "outputs/veredicto-inicial.txt",
+    "outputs/veredicto-que-guarda.txt",
+    "outputs/veredicto-el-override-pierde-la-base.txt",
+    "outputs/veredicto-declaraciones.txt"
   ],
   "source": [
     "odoo19c: odoo/orm/fields.py:314-317 — Field.__init__ son tres lineas y NO enruta: guarda kwargs crudos en _args__",

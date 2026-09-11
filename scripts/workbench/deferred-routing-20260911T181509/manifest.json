@@ -5,7 +5,7 @@
   "blind_to": "Si el descriptor resultante COMPUTA el valor correcto — sólo mide el registro, no la lectura. Y al orden en que contribute_to_class ve la MRO cuando la base no es una abstracta de Django sino un mixin llano de Python (la Forma 2 de este árbol, p. ej. DisplayNameMixin), que no tiene _meta.",
   "destination": "docs: source/gestion/pm/api/iniciativas/completar-raiz-orm/ — insumo de TASK-API-0416 (#346) y del hallazgo H-API-1105.",
   "reproducible": "PYTHONPATH=src DJANGO_SETTINGS_MODULE=config.settings.testing uv run python scripts/workbench/deferred-routing-20260911T181509/probe_django_supports_one_class.py",
-  "outputs": ["salidas/verdict-one-class.txt"],
+  "outputs": ["outputs/verdict-one-class.txt"],
   "source": [
     "odoo19c: odoo/orm/fields.py:278 — store es un ATRIBUTO de Field (store: bool = True), no una clase",
     "odoo19c: odoo/orm/fields.py:314-317 — Field.__init__ son tres líneas: guarda kwargs crudos en _args__ y no enruta",
