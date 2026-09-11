@@ -3874,6 +3874,54 @@ models.Field.determine_inverse = determine_inverse
 NonStored.determine_inverse = determine_inverse
 
 
+def determine_compute(field, records):
+    """Ejecuta el cómputo declarado del campo y devuelve lo que produce.
+
+    Es el cuerpo EFECTIVO de la rama ``elif self.compute:`` del descriptor de
+    la fuente (``odoo19c: odoo/orm/fields.py:1736-1737``, con su comentario
+    *"non-stored field or new record without origin: compute"*) **para un campo
+    sin columna**. Allá esa rama llama ``self.compute_value(recs)`` (``:1744``),
+    que termina en ``records._compute_field_value(self)``, cuyo cuerpo entero es
+    (``odoo19c: odoo/orm/models.py:4953-4959``)::
+
+        determine(field.compute, self)
+
+        if field.store and any(self._ids):
+            ...
+
+    Con ``store=False`` el segundo bloque no se alcanza, así que lo que queda es
+    la llamada a :func:`determine` — la misma forma que :func:`determine_inverse`
+    (``odoo19c: odoo/orm/fields.py:1921``).
+
+    Se declara **CONSTRUYE** por el criterio de las dos categorías: no hay
+    símbolo hecho —Django no conoce la noción de un método de cómputo sobre un
+    campo— pero las primitivas están (``getattr`` y ``callable``, que es lo que
+    :func:`determine` ya usa) y no hace falta ninguna dependencia de fuera.
+
+    POR QUÉ NO SE LLAMA ``compute_value``: ese nombre ya está tomado en este
+    módulo (``:4179``) por el porte de ``Field.compute_value``, que sí hace la
+    ceremonia completa —desmarcar de la cola, ``protecting``, llevar al caché—
+    y por tanto sólo aplica a un campo CON columna. Un :class:`NonStored` no
+    tiene ni cola ni caché que tocar: llamar a aquél desde aquí ejecutaría un
+    mecanismo que no le corresponde.
+
+    DIVERGENCIA DE MECANISMO, ya declarada: el cómputo de la fuente **asigna**
+    sobre el recordset y el descriptor relee el caché; aquí **devuelve**, y ese
+    retorno es el canal. Es la divergencia 1 de
+    :class:`~orm.models.DisplayNameMixin`, que precede a esta función y que los
+    cinco modelos que declaraban su ``_compute_display_name`` ya ejercían.
+    """
+    return determine(field.compute, records)
+
+
+#: Se instala desde AQUÍ y no desde ``fields_nonstored`` por la misma razón que
+#: ``determine_domain`` y ``determine_inverse``: este módulo importa aquél
+#: (``:83``), así que el import inverso sería un ciclo. Sólo sobre
+#: :class:`NonStored`: el campo con columna ya tiene la ceremonia completa en
+#: :func:`compute_value`, que es lo que la fuente le da.
+NonStored.determine_compute = determine_compute
+
+
 ############################################################################
 #
 # Cache management methods — ≙ ``odoo19c: odoo/orm/fields.py:1520-1630``

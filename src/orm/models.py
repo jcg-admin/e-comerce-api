@@ -84,6 +84,7 @@ from orm.commands import ManyToManyLink, ManyToManySet, One2manyChild
 from orm import registry
 from orm.domains import Domain, to_q
 from orm.fields import convert_to_display_name
+from orm.fields_textual import Char
 from orm.identifiers import NewId
 from orm.fields_nonstored import NonStored, non_stored_fields
 from orm.fields_properties import Properties, check_property_field_value_name
@@ -2831,11 +2832,6 @@ def search_display_name(model_cls, operator, value):
                     for field_expr in search_fnames])
 
 
-def _display_name_default(record):
-    """El ``default`` del descriptor: delega en ``_compute_display_name``."""
-    return record._compute_display_name()
-
-
 class OrderMixin:
     """``_check_qorder`` — la cláusula de orden se valida antes de usarse.
 
@@ -2935,13 +2931,31 @@ class DisplayNameMixin:
     borre, igual que allá.
     """
 
-    #: ≙ ``display_name = Char(string='Display Name', compute=..., search=...)``
-    #: (``odoo19c: odoo/orm/models.py:473``). El ``compute`` y el ``search`` de
-    #: la fuente son los dos métodos de abajo; aquí el primero lo cablea el
-    #: ``default`` del descriptor y el segundo lo llama ``name_search``.
-    display_name = NonStored(default=_display_name_default,
-                             search='_search_display_name',
-                             help_text='Display Name')
+    #: ≙ la declaración de la fuente, verbatim salvo el nombre del argumento
+    #: de la etiqueta (``odoo19c: odoo/orm/models.py:473-477``)::
+    #:
+    #:     display_name = Char(
+    #:         string='Display Name',
+    #:         compute='_compute_display_name',
+    #:         search='_search_display_name',
+    #:     )
+    #:
+    #: Sin ``store=``, el bloque ``compute`` de la fuente deriva
+    #: ``store=False`` (``odoo19c: odoo/orm/fields.py:443-450``, portado en
+    #: :func:`orm.fields_nonstored.apply_source_defaults`), así que el
+    #: enrutador devuelve un :class:`~orm.fields_nonstored.NonStored` y el
+    #: campo no tiene columna — igual que allá.
+    #:
+    #: La etiqueta va en el primer posicional porque es ``verbose_name`` en
+    #: Django y ``string`` en la fuente; antes viajaba en ``help_text=``, que
+    #: es el alias de ``help=`` y no de ``string=``.
+    #:
+    #: Hasta ``TASK-API-0415`` el cómputo se cableaba por ``default=`` con una
+    #: función que lo envolvía: el descriptor guardaba ``compute`` y nadie lo
+    #: despachaba. Hoy lo despacha su tercera rama de lectura.
+    display_name = Char('Display Name',
+                        compute='_compute_display_name',
+                        search='_search_display_name')
 
     def _compute_display_name(self):
         """La etiqueta del registro — ≙ ``_compute_display_name`` (``:1425``).

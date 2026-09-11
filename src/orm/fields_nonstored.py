@@ -110,11 +110,12 @@ class NonStored:
         #: de los siete tipos que enruta :func:`projection_or_none` llevan
         #: ``compute=`` y ningún ``store=True``.
         #:
-        #: Se **conserva** y no se traga con el resto: sin él, el árbol no
-        #: tiene con qué medir cuántos campos sin columna declaran de dónde
-        #: sale su valor, y el motor de recálculo (tarea **#273**) no tendría
-        #: dónde leerlo cuando llegue. Hoy nadie lo invoca — el valor sigue
-        #: saliendo de ``related`` o de ``default``.
+        #: **Lo despacha :meth:`__get__`** desde ``TASK-API-0415``: su
+        #: tercera rama llama a ``determine_compute``, que es el cuerpo
+        #: efectivo de la rama ``elif self.compute:`` de la fuente para un
+        #: campo sin columna. Hasta entonces se guardaba y nadie lo invocaba:
+        #: el valor salía de ``related`` o de un ``default`` que envolvía al
+        #: cómputo, que es la forma que los dos sitios del árbol declaraban.
         self.compute = compute
         self.name = None
 
@@ -139,12 +140,38 @@ class NonStored:
     # -- protocolo de descriptor -------------------------------------------
 
     def __get__(self, instance, owner=None):
+        """El valor del campo — ≙ ``Field.__get__`` (``odoo19c:
+        odoo/orm/fields.py:1642``), en la parte que alcanza a un campo sin
+        columna.
+
+        El ORDEN de las cuatro ramas es el de la fuente, no una elección:
+
+        1. **lo escrito gana** — allá ``value = field_cache[record_id]``
+           (``:1673``) se intenta antes que cualquier rama de cálculo; aquí el
+           ``__dict__`` de la instancia es ese caché;
+        2. **``related``** — allá no es una rama aparte: al montar la cadena,
+           ``self.compute = self._compute_related`` (``:632``) **sobreescribe**
+           el cómputo del autor, así que la cadena gana siempre. Aquí son dos
+           ramas porque el descriptor guarda los dos atributos, y el orden
+           reproduce esa sobreescritura;
+        3. **``compute``** — la rama ``elif self.compute:`` de la fuente
+           (``:1736``), cuyo comentario la acota: *"non-stored field or new
+           record without origin: compute"*;
+        4. **``default``** — el ``else`` final (``:1788-1789``):
+           *"non-stored field or stored field on new record: default value"*.
+
+        Las ramas de ``self.store`` de la fuente —traer de la base, traer del
+        origen— no se portan **porque no se alcanzan**: un :class:`NonStored`
+        es por construcción ``store=False``. No es alcance recortado.
+        """
         if instance is None:
             return self
         if self.name in instance.__dict__:
             return instance.__dict__[self.name]
         if self.related:
             return self.resolve_related(instance)
+        if self.compute:
+            return self.determine_compute(instance)
         return self.resolve_default(instance)
 
     def __set__(self, instance, value):
