@@ -52,6 +52,7 @@ Ver :ref:`h-api-855` para el veredicto por archivo de las raíces espejadas.
 """
 import collections
 import collections.abc
+import contextlib
 import functools
 import itertools
 import logging
@@ -83,13 +84,13 @@ from orm.environments import (
 from orm.commands import ManyToManyLink, ManyToManySet, One2manyChild
 from orm import registry
 from orm.domains import Domain, to_q
-from orm.fields import FieldDescriptor, convert_to_display_name
+from orm.fields import FieldDescriptor, convert_to_display_name, determine_inverse
 from orm.fields_textual import Char
 from orm.identifiers import NewId
 from orm.fields_nonstored import NonStored, non_stored_fields
 from orm.fields_properties import Properties, check_property_field_value_name
 from orm.utils import (FieldRegistryDescriptor, OriginIds, as_record_list,
-                       check_object_name, model_field_registry,
+                       browse, check_object_name, model_field_registry,
                        parse_field_expr, record_ids)
 from service.db import Savepoint
 from tools.cache import ormcache
@@ -681,34 +682,373 @@ class DefaultGetMixin:
 
         return defaults
 
+    @api.model_create_multi
     @classmethod
-    def create(cls, **values):
-        """Alta que aplica los defaults que faltan, como la fuente.
+    def create(cls, vals_list):
+        """Alta de registros — ≙ ``BaseModel.create`` por CONTENIDO.
 
-        ≙ la llamada ``vals = self._add_missing_default_values(vals)`` que
-        ``BaseModel.create`` hace en ``odoo19c: odoo/orm/models.py:4796``.
+        ≙ ``odoo19c: odoo/orm/models.py:4611-4770``. Recibe una **lista de
+        dicts** y devuelve el conjunto de filas creadas, en el orden pedido;
+        ``@api.model_create_multi`` convierte un dict suelto en ``[vals]``,
+        como el decorador de la fuente (``decorators.py:357-371``).
 
-        **La divergencia de forma, declarada:** allá ``create`` recibe una
-        lista de dicts y devuelve un recordset; aquí recibe kwargs y devuelve
-        una instancia, que es la firma que ya usan los seis ``create`` de
-        clase del árbol (``ir_config_parameter``, ``res_currency``,
-        ``ir_default``, …). Lo que se porta es **el paso**, no la firma.
+        Hasta :ref:`h-api-1108` este método recibía ``**values`` y devolvía
+        una instancia, y su docstring lo presentaba como *"se porta el paso,
+        no la firma"*. La firma **es** parte del contrato: los overrides de la
+        referencia llaman ``super().create(vals_list)`` con una lista y los
+        llamadores desempaquetan el recordset. Con la firma cambiada ningún
+        porte de un ``create`` de addon podía ser fiel.
 
-        El **muchos-a-muchos se asigna después del alta**, no dentro: Django
-        exige la fila antes de poblar la tabla intermedia. Allá el mismo caso
-        se resuelve convirtiendo la lista de ids en ``[Command.set(value)]``
-        (``:1580-1581``); aquí el equivalente es ``manager.set(...)``, porque
-        nuestro ``Command`` es ejecutivo (:ref:`h-api-589`, tarea **#345**).
+        Los pasos, en el orden de la fuente y con su receptor aquí:
+
+        1. ``assert`` lista/tupla; vacía → ``browse()`` vacío.
+        2. ``check_access('create')`` sobre el recordset vacío —
+           ``AccessQuerySet(model=cls).none()``, el mismo receptor que
+           ``_check_access`` usa en ``:1903``.
+        3. Los nombres de campo dados más los ``default_*`` del contexto que
+           el modelo declare; un nombre que el modelo no tiene levanta
+           ``ValueError("Invalid field %r in %r")``; cada uno pasa por
+           ``_check_field_access(field, 'write')`` (``FieldSqlMixin``).
+        4. :meth:`_prepare_create_values` — defaults, campos mágicos fuera.
+        5. Clasificación por registro en ``stored`` / ``inherited`` /
+           ``inversed`` / ``protected``.
+        6. Padres de ``_inherits``: ``write`` sobre el padre dado, o
+           ``create`` en lote de los que faltan, cuyo id cae en ``stored``.
+        7. Inserción de las filas y ``modified(..., create=True)`` bajo
+           ``env.protecting``.
+        8. Los inversos, un grupo por método; luego ``_validate_fields``
+           sobre lo invertido, excluyendo lo almacenado.
+        9. ``_check_company`` si ``_check_company_auto``.
+        10. La rama de importación: ``ir.model.data._update_xmlids`` cuando el
+            contexto trae ``_import_current_module``.
+
+        **Divergencias de mecanismo, declaradas** (cada una con su razón):
+
+        - **La fila se inserta una a una por :meth:`_create_row_from_values`
+          y no por un ``INSERT`` por lote de ``INSERT_BATCH_SIZE``**
+          (``_create``, ``:4849-4897``). Medido antes de decidirlo
+          (``probe_bulk_create_returns_ids_and_adopter_mro.py``):
+          ``bulk_create`` devuelve los ids en PostgreSQL pero **salta
+          ``save()``**, y los adopters lo sobreescriben —``ir_cron.py:1373``,
+          ``res_partner.py:1594``, ``ir_sequence.py:282``,
+          ``hr_employee.py:1554``— para hacer lo que la fuente hace en su
+          propio ``create``/``write``. Un lote que los esquive crea filas
+          sin ese trabajo. El precómputo (``_add_precomputed_values``) y
+          ``parent_path`` viven en ``pre_save``/``save()`` de este árbol, así
+          que corren por fila al insertar — es donde la fuente los hace en
+          bloque (``:4808`` y ``_parent_store_create``, ``:4916``).
+        - **Un muchos-a-muchos se asigna después del alta**: Django exige la
+          fila antes de poblar la tabla intermedia. La fuente lo resuelve en
+          ``other_fields`` de ``_create`` (``:4924-4931``), también después
+          del ``INSERT``; el sitio es el mismo, el instrumento es
+          ``manager.set``.
+        - **El check de ``bypass_search_access`` del ``many2one``**
+          (``:4686-4687``) no viaja: ningún campo de este árbol declara ese
+          atributo (``grep -rn bypass_search_access src addons`` → 0), y el
+          registro por nombre lo resolvería ``check_access('read')`` del
+          comodelo. Se declara, no se omite: tarea sucesora en el hallazgo.
+        - **``invalidate_recordset`` sobre los x2many no almacenados tras el
+          inverso** (``:4737-4738``): aquí un x2many sin columna no tiene
+          caché que invalidar — ``NonStored`` recalcula al leer
+          (:ref:`h-api-1106`).
+        - **Las columnas de autoría** (``create_uid``/``write_uid``) no
+          existen: ``LOG_ACCESS_COLUMNS`` de este árbol son las dos fechas de
+          ``TimeStampedModel``, ``auto_now``.
+
+        **INVENTORY:** ``cpython`` — ``collections.defaultdict``,
+        ``contextlib.ExitStack`` (trae hecho); ``django`` — ``Model.__init__``
+        + ``objects.create`` como INSERT ... RETURNING, ``Case/When`` para el
+        orden en :func:`orm.utils.browse` (trae hecho); ``postgresql`` —
+        ``RETURNING "id"`` es lo que ``objects.create`` emite (trae hecho);
+        la clasificación, el lote de padres y el despacho de inversos se
+        construyen aquí con esas primitivas (tiene con qué construirlo).
+
+        :param vals_list: valores por registro, ``[{'campo': valor, ...}]``.
+        :returns: las filas creadas, en el orden de ``vals_list``.
         """
-        values = cls._add_missing_default_values(values)
-        deferred = {}
-        for field in cls._meta.many_to_many:
-            if field.name in values:
-                deferred[field.name] = values.pop(field.name)
-        record = cls.objects.create(**values)
-        for name, value in deferred.items():
-            getattr(record, name).set(value)
-        return record
+        assert isinstance(vals_list, (list, tuple))
+        if not vals_list:
+            return browse(cls)
+
+        AccessQuerySet(model=cls).none().check_access('create')
+
+        # check access to all user-provided fields
+        context = get_context()
+        field_names = OrderedSet(fname for vals in vals_list for fname in vals)
+        field_names.update(
+            field_name
+            for context_key in context
+            if context_key.startswith('default_')
+            and (field_name := context_key[8:])
+            and _create_field_lookup(cls, field_name) is not None
+        )
+        receiver = cls()
+        for field_name in field_names:
+            found = _create_field_lookup(cls, field_name)
+            if found is None:
+                raise ValueError(f"Invalid field {field_name!r} in {cls._name!r}")
+            receiver._check_field_access(found[0], 'write')
+
+        new_vals_list = cls._prepare_create_values(vals_list)
+
+        # classify fields for each record
+        data_list = []
+        determine_inverses = collections.defaultdict(OrderedSet)   # {inverse: fields}
+
+        for vals in new_vals_list:
+            data = {}
+            data['stored'] = stored = {}
+            data['inversed'] = inversed = {}
+            data['inherited'] = inherited = collections.defaultdict(dict)
+            data['protected'] = protected = set()
+            for key, val in vals.items():
+                found = _create_field_lookup(cls, key)
+                if found is None:
+                    raise ValueError("Invalid field %r on model %r" % (key, cls._name))
+                field, origin = found
+                if origin is not None:
+                    inherited[origin][key] = val
+                    continue
+                store, inverse, compute, readonly, precompute = _creation_flags(field)
+                if store:
+                    stored[key] = val
+                if inverse:
+                    inversed[key] = val
+                    determine_inverses[inverse].add(field)
+                # protect editable computed fields and precomputed fields
+                # against (re)computation
+                if compute and (not readonly or precompute):
+                    protected.add(field)
+            data_list.append(data)
+
+        # create or update parent records
+        for _parent_name, fk_name in getattr(cls, '_inherits', {}).items():
+            parent_model = _inherits_parent(cls, fk_name)
+            fk_field = cls._meta.get_field(fk_name)
+            parent_data_list = []
+            for data in data_list:
+                given = (data['stored'].get(fk_field.name)
+                         or data['stored'].get(fk_field.attname))
+                if not given:
+                    parent_data_list.append(data)
+                elif data['inherited'][parent_model]:
+                    parent = (given if isinstance(given, parent_model)
+                              else parent_model.objects.get(pk=given))
+                    parent.write(data['inherited'][parent_model])
+
+            if parent_data_list:
+                parents = parent_model.create([
+                    data['inherited'][parent_model]
+                    for data in parent_data_list
+                ])
+                for parent, data in zip(parents, parent_data_list):
+                    data['stored'].pop(fk_field.attname, None)
+                    data['stored'][fk_field.name] = parent
+
+        # create records with stored fields
+        records = cls._create(data_list)
+
+        # protect fields being written against recomputation
+        with contextlib.ExitStack() as stack:
+            for data in data_list:
+                stack.enter_context(
+                    env().protecting(data['protected'], data['record']))
+            # call inverse method for each group of fields
+            for fields in determine_inverses.values():
+                # determine which records to inverse for those fields
+                inv_names = {field.name for field in fields}
+                inv_rec_ids = []
+                for data in data_list:
+                    if inv_names.isdisjoint(data['inversed']):
+                        continue
+                    record = data['record']
+                    for fname, value in data['inversed'].items():
+                        if fname in inv_names and fname not in data['stored']:
+                            setattr(record, fname, value)
+                    inv_rec_ids.append(record.pk)
+
+                inv_records = browse(cls, inv_rec_ids)
+                determine_inverse(next(iter(fields)), inv_records)
+
+        # check Python constraints for non-stored inversed fields
+        for data in data_list:
+            data['record']._validate_fields(data['inversed'], data['stored'])
+
+        if cls._check_company_auto:
+            for record in records:
+                record._check_company()
+
+        import_module = context.get('_import_current_module')
+        if not import_module:   # not an import -> bail
+            return records
+
+        # It is to support setting xids directly in create by
+        # providing an "id" key (otherwise stripped by create) during an import
+        # (which should strip 'id' from the input data anyway)
+        noupdate = context.get('noupdate', False)
+
+        xids = (v.get('id') for v in vals_list)
+        IrModelData = apps.get_model('base', 'IrModelData')
+        IrModelData._update_xmlids([
+            {
+                'xml_id': xid if '.' in xid else ('%s.%s' % (import_module, xid)),
+                'record': rec,
+                # note: this is not used when updating o2ms above...
+                'noupdate': noupdate,
+            }
+            for rec, xid in zip(records, xids)
+            if xid and isinstance(xid, str)
+        ])
+
+        return records
+
+    @classmethod
+    def _prepare_create_values(cls, vals_list):
+        """Completa y limpia los valores de alta — ≙ ``_prepare_create_values``.
+
+        ≙ ``odoo19c: odoo/orm/models.py:4771-4812``. Docstring de la fuente,
+        verbatim: *"Clean up and complete the given create values, and return
+        a list of new vals containing: default values, discarded forbidden
+        values (magic fields), precomputed fields."*
+
+        Los ``bad_names`` son los de la fuente —``id``, ``parent_path``, las
+        columnas de acceso y los ``precompute`` de sólo lectura— y se sacan
+        **después** de aplicar los defaults, como allá (``:4796-4800``). El
+        ``setdefault`` de ``create_uid``/``create_date``/… (``:4801-4805``)
+        no tiene columna aquí: las dos fechas de ``TimeStampedModel`` son
+        ``auto_now`` y las escribe ``save()``.
+
+        ``_add_precomputed_values(result_vals_list)`` (``:4808``) no se llama
+        desde aquí: en este árbol el precómputo corre en ``pre_save`` sobre la
+        instancia (``_run_precompute``), que es el único sitio desde el que
+        puede asignar al descriptor de la fila. Sacar el ``precompute``
+        ``readonly`` de ``vals`` es lo que lo obliga a computarse
+        (:func:`_precomputable_fields`).
+        """
+        bad_names = ['id', 'parent_path']
+        if getattr(cls, '_log_access', True):
+            bad_names.extend(LOG_ACCESS_COLUMNS)
+
+        # also discard precomputed readonly fields (to force their computation)
+        bad_names.extend(
+            fname
+            for fname, field in model_field_registry(cls).items()
+            if isinstance(field, Field) and field.precompute and field.readonly
+        )
+
+        result_vals_list = []
+        for vals in vals_list:
+            # add default values
+            vals = cls._add_missing_default_values(vals)
+
+            # add magic fields
+            for fname in bad_names:
+                vals.pop(fname, None)
+
+            result_vals_list.append(vals)
+
+        return result_vals_list
+
+    @classmethod
+    def _create(cls, data_list):
+        """Inserta las filas de ``data_list`` — ≙ ``_create`` (``:4849-4935``).
+
+        Docstring de la fuente, verbatim: *"Create records from the stored
+        field values in ``data_list``."* Cada ``data`` sale con su
+        ``'record'`` puesto, que es lo que :meth:`create` lee después
+        (``data['record'] = record``, ``:4901``).
+
+        La fila la produce :meth:`_create_row_from_values` tras
+        :meth:`_load_records_coerce_vals` y el aparte de lo relacional, por
+        la razón medida en el docstring de :meth:`create`: un ``INSERT`` por
+        lote saltaría el ``save()`` que los adopters sobreescriben. El
+        muchos-a-muchos llano —una lista de ids, no un ``Command``— se aplica
+        con la fila ya real, que es el momento en que la fuente atiende sus
+        ``other_fields`` (``:4924-4931``).
+
+        ``records.modified(self._fields, create=True)`` (``:4921``) se conserva
+        bajo ``env.protecting``, con los mismos campos protegidos por fila.
+        """
+        assert data_list
+        ids = []
+        for data in data_list:
+            scalar, relational = cls._load_records_split_relational(data['stored'])
+            # Lo que exige la fila ya real: el muchos-a-muchos por su cara
+            # directa y toda relación inversa (el ``One2many``/``Many2many``
+            # reverso de la fuente) — ≙ ``other_fields`` de ``_create``.
+            deferred = {}
+            registry = model_field_registry(cls)
+            for name in list(scalar):
+                field = registry.get(name)
+                if field is None:
+                    continue
+                if field.many_to_many or not isinstance(field, Field):
+                    deferred[name] = scalar.pop(name)
+            record = cls._create_row_from_values(
+                cls._load_records_coerce_vals(scalar))
+            if relational:
+                record._load_records_apply_relational(relational)
+            for name, value in deferred.items():
+                getattr(record, name).set(value)
+            data['record'] = record
+            ids.append(record.pk)
+
+        records = browse(cls, ids)
+
+        # protect fields being written against recomputation
+        with contextlib.ExitStack() as stack:
+            for data in data_list:
+                stack.enter_context(
+                    env().protecting(data['protected'], data['record']))
+            # mark computed fields as todo
+            modified(records, list(model_field_registry(cls)), create=True)
+
+        return records
+
+
+def _creation_flags(field):
+    """``(store, inverse, compute, readonly, precompute)`` de un campo al crear.
+
+    Los cinco atributos que :meth:`DefaultGetMixin.create` lee de cada campo
+    (``:4675-4684``). Un ``Field`` de Django los declara —``fields.py``
+    instala los defaults de la referencia sobre ``models.Field``—; una
+    **relación inversa** (``ManyToOneRel`` / ``ManyToManyRel``, el
+    ``One2many`` de la fuente visto desde el hijo) no es un ``Field`` y no
+    los tiene. Para ella valen los de un ``One2many`` de la referencia sin
+    ``compute``: se almacena —su valor se aplica con la fila ya real, como
+    ``other_fields`` en ``_create`` (``:4924``)— y no invierte ni protege.
+    """
+    if isinstance(field, Field):
+        return (field.store, field.inverse, field.compute, field.readonly,
+                field.precompute)
+    return True, None, None, False, False
+
+
+def _create_field_lookup(model, name):
+    """El campo que ``name`` nombra en un alta, y de qué padre viene.
+
+    Devuelve ``(campo, None)`` para un campo propio —por ``name`` o por el
+    ``attname`` de un ``ForeignKey``, que es la segunda cara que Django le
+    da—, ``(campo, modelo padre)`` para uno heredado por ``_inherits``, y
+    ``None`` si el modelo no lo declara.
+
+    ≙ ``self._fields.get(name)`` más ``field.inherited`` /
+    ``field.related_field.model_name`` (``:4653``, ``:4675-4677``). Allá el
+    campo heredado es un campo espejo del hijo que sabe de dónde viene; aquí
+    lo responde :func:`_delegated_origin` sobre el mapa de delegación, y el
+    campo es el del padre.
+    """
+    fields = model_field_registry(model)
+    if name in fields:
+        return fields[name], None
+    for field in model._meta.concrete_fields:
+        if field.attname == name:
+            return field, None
+    delegated = _delegated_origin(model, name)
+    if delegated is None:
+        return None
+    parent_model, field_name = delegated
+    return model_field_registry(parent_model)[field_name], parent_model
 
 
 #: ≙ ``LOG_ACCESS_COLUMNS`` (``odoo19c: odoo/orm/models.py:296``). Allá son
@@ -1313,7 +1653,7 @@ class CopyMixin:
                     continue
                 child_values.pop(relation.field.attname, None)
                 child_values[fk_name] = new
-                nuevo_hijo = child_model.create(**child_values)
+                nuevo_hijo, = child_model.create([child_values])
                 child.copy_children(nuevo_hijo, seen=seen)
 
     def copy_translations(self, new, excluded=()):
@@ -1362,9 +1702,13 @@ class CopyMixin:
         values = self.copy_data(default, seen=seen)
         if values is None:
             return None
-        alta = cls.create if hasattr(cls, '_add_missing_default_values') \
-            else cls.objects.create
-        new = alta(**values)
+        # ≙ ``new = self.create(vals_list)`` — un modelo que adopte
+        # ``DefaultGetMixin`` pasa por el ``create`` de la fuente; el resto,
+        # por el alta de Django. Un solo registro por ``copy``, como allá.
+        if issubclass(cls, DefaultGetMixin):
+            new, = cls.create([values])
+        else:
+            new = cls.objects.create(**values)
         self.copy_children(new, seen=seen)
         self.copy_translations(new, excluded=default or ())
         return new
