@@ -1551,6 +1551,14 @@ def _field_contribute_to_class(self, cls, name, private_only=False):
     _DJANGO_FIELD_CONTRIBUTE(self, cls, name, private_only=private_only)
     self._setup_attrs__(cls, name)
     _install_field_descriptor(self, cls)
+    phase = getattr(self, 'setup_nonrelated__', None)
+    if phase is not None:
+        #: ``setup_nonrelated`` (``odoo19c: odoo/orm/fields.py:1043``) es la
+        #: FASE de la fuente: corre con la clase ya construida, que es lo que
+        #: la decision de ``ondelete`` necesita y el sitio de declaracion no
+        #: tiene. Lo cuelga quien lo necesita —hoy ``Many2one``— porque este
+        #: modulo es la base que aquel importa, y al reves seria un ciclo.
+        phase(self, cls)
 
 
 def _install_field_descriptor(field, cls):

@@ -78,7 +78,9 @@ from orm.fields_nonstored import (
     annotate_related,
     projection_or_none,
 )
+from django.db.models.fields.related import lazy_related_operation
 from orm.identifiers import NewId
+from orm.model_classes import is_transient
 from orm.registry import IR_MODELS, model_by_name, name_of, sentinel_label
 from orm.utils import display_name_of, model_of, record_ids
 from tools.misc import SENTINEL, unique
@@ -599,13 +601,19 @@ def _apply_ondelete(args, kwargs):
             # las 1868 declaraciones que el arbol ya tiene, y el segundo
             # posicional de `ForeignKey` es ese mismo `on_delete`. No se pisa;
             # lo que se resuelve es el ATRIBUTO, que allá tambien existiria.
-            return args, kwargs, declared
+            # El llamador fijo la politica; NO es provisional.
+            return args, kwargs, declared, False
         kwargs['on_delete'] = ON_DELETE_POLICY[declared]
-        return args, kwargs, declared
+        # Provisional: la fuente lo decide en `setup_nonrelated`, donde ya
+        # tiene el modelo Y el comodelo. Aqui no hay ninguno de los dos.
+        return args, kwargs, declared, True
 
     declared = kwargs.pop('ondelete')
-    if not declared:
-        #: ``:282`` — la rama no transitoria, que es la que este momento alcanza.
+    from_default = not declared
+    if from_default:
+        #: ``:282`` — la rama que este momento alcanza. La tercera, la
+        #: transitoria de ``:276``, la decide :func:`_setup_nonrelated`
+        #: cuando ambas clases existen.
         declared = 'restrict' if required else 'set null'
 
     if declared == 'set null' and required:
@@ -642,7 +650,59 @@ def _apply_ondelete(args, kwargs):
             f"ondelete={declared!r} no es uno de los tres valores que la "
             f"fuente admite: {sorted(ON_DELETE_POLICY)}"
         ) from None
-    return args, kwargs, declared
+    return args, kwargs, declared, from_default
+
+
+def _setup_nonrelated(field, model):
+    """El tercer caso del default de ``ondelete`` — ≙ ``setup_nonrelated``
+    (``odoo19c: odoo/orm/fields_relational.py:267-282``).
+
+    La fuente decide la politica de borrado en una FASE, no en el sitio de
+    declaracion, y por eso puede preguntar por las dos clases::
+
+        if model.is_transient() and not comodel.is_transient():
+            # "Many2one relations from TransientModel Model are annoying
+            #  because they can block deletion due to foreign keys. So unless
+            #  stated otherwise, we default them to ondelete='cascade'."
+            self.ondelete = 'cascade' if self.required else 'set null'
+        else:
+            self.ondelete = 'restrict' if self.required else 'set null'
+
+    Solo corre cuando la politica salio del DEFAULT. Con ``ondelete``
+    declarado —o con el ``on_delete`` de Django en la llamada— la fuente
+    tampoco entra: su guarda es ``if not self.ondelete`` (``:273``).
+    """
+    if not is_transient(model) or model._meta.abstract:
+        #: ``:276`` pregunta por el modelo ANTES que por el comodelo, asi que
+        #: un modelo persistente no paga ninguna resolucion. Y un abstracto no
+        #: tiene tabla: su politica la decide la concreta que lo herede.
+        return
+    comodel = field.remote_field.model
+    if isinstance(comodel, str):
+        #: Comodelo diferido. El stack trae hecha la fase que hace falta:
+        #: ``lazy_related_operation`` agenda la funcion *"once `model` and all
+        #: `related_models` have been imported and registered with the app
+        #: registry"* (``django/db/models/fields/related.py``), que es lo que
+        #: ``setup_nonrelated`` garantiza alla. No se construye nada.
+        lazy_related_operation(
+            lambda _model, _comodel, field=field: _decide_transient_ondelete(
+                field, _comodel),
+            model, comodel)
+        return
+    _decide_transient_ondelete(field, comodel)
+
+
+def _decide_transient_ondelete(field, comodel):
+    """La rama ``:276-279``, ya con las dos clases resueltas."""
+    if is_transient(comodel):
+        #: El ``else`` de ``:282``: wizard hacia wizard no es el caso molesto
+        #: que el comentario de la fuente describe. La politica que dejo el
+        #: default al construir ya es la correcta.
+        return
+    required = not field.null
+    declared = 'cascade' if required else 'set null'
+    field.ondelete = declared
+    field.remote_field.on_delete = ON_DELETE_POLICY[declared]
 
 
 def _is_source_name(value):
@@ -817,7 +877,8 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
             CompanyDependent(*resto, base_type='many2one',
                              comodel=_comodel_label(to), **kwargs),
             check_company)
-    args, kwargs, resolved_ondelete = _apply_ondelete(args, kwargs)
+    args, kwargs, resolved_ondelete, ondelete_from_default = \
+        _apply_ondelete(args, kwargs)
     # DESPUES de ``_apply_ondelete``, y no antes: su guarda de ``:289`` compara
     # la CADENA declarada contra ``IR_MODELS``, que lleva los ``_name`` de la
     # fuente. Traducir primero la dejaria sin nada que comparar.
@@ -836,6 +897,13 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
     # (`test_orm/tests/test_fields.py:4230-4256`, cuatro casos). Un porte que
     # solo tradujera el kwarg dejaria ciegos a los cuatro.
     field.ondelete = resolved_ondelete
+    if ondelete_from_default and store:
+        #: El gancho que :func:`~orm.fields._field_contribute_to_class` invoca
+        #: cuando la clase ya existe. Se cuelga SOLO si la politica salio del
+        #: default: su presencia ES la guarda ``if not self.ondelete`` de
+        #: ``:273``, que aqui no se puede expresar dejando el atributo vacio
+        #: porque Django exige ``on_delete`` posicional al construir la FK.
+        field.setup_nonrelated__ = _setup_nonrelated
     if source_name is not None:
         # ``comodel_name`` es el atributo que la fuente declara
         # (``odoo19c: odoo/orm/fields_relational.py:36``) y el unico sitio donde

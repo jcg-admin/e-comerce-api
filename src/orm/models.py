@@ -4032,6 +4032,22 @@ class BaseModel(Model):
     _transient: bool = False
     """ Whether the model is *transient*. """
 
+    @classmethod
+    def is_transient(cls) -> bool:
+        """Devuelve si el modelo es transitorio — ≙ ``is_transient``
+        (``odoo19c: odoo/orm/models.py:5738-5744``), verbatim.
+
+        Docstring de la fuente: *"Return whether the model is transient. See
+        :class:`TransientModel`."*
+
+        Es un ``classmethod`` sobre un atributo de clase, y eso es lo que lo
+        hace utilizable en una fase temprana: no toca ``env``, no necesita
+        instancia ni registro poblado. Lo consume el tercer caso del default
+        de ``ondelete`` (``fields_relational.py:274-282`` de la fuente), que
+        pregunta por el modelo Y por su comodelo.
+        """
+        return cls._transient
+
     _name: str = None                   #: the model name (in dot-notation, module namespace)
     _description: str | None = None     #: the model's informal name
     _module: str | None = None          #: the model's module (in the Odoo sense)
