@@ -17,7 +17,7 @@
     "odoo19c: odoo/orm/models.py:4611-4770 — BaseModel.create, y decorators.py:357-371 — model_create_multi",
     "src/orm/models.py — DefaultGetMixin.create, _prepare_create_values, _create; src/orm/decorators.py — api.model_create_multi"
   ],
-  "reproducible": "cd /home/user/kaupamex-api && for p in scripts/workbench/create-por-contenido-20260911T221144/probe_*.py; do DJANGO_SETTINGS_MODULE=config.settings.testing uv run python \"$p\"; done; uv run pytest tests/unit/orm/test_create.py -q --reuse-db",
+  "reproducible": "cd /home/user/kaupamex-api && for p in scripts/workbench/create-por-contenido-20260911T221144/probe_*.py; do PYTHONPATH=src DJANGO_SETTINGS_MODULE=config.settings.testing uv run python \"$p\"; done; uv run pytest tests/unit/orm/test_create.py -q --reuse-db",
   "control": "anulacion: retirando el lote de padres _inherits de `create` (models.py restaurado byte a byte, verificado con cmp) tests/unit/orm/test_create.py pasa de 14 passed a 2 failed, 12 passed — caen exactamente TestInheritsParents::test_the_inherits_parent_is_created_first y ::test_a_model_without_the_loader_mixin_now_creates (IrCron tambien es _inherits de ir.actions.server). Log scripts/evidence/anulacion-351-2026-09-11T22-27-34-001.log",
   "corrected_premise": {
     "afirmado_antes": "el docstring de create decia «se porta el paso, no la firma»: la firma por kwargs era una adaptacion equivalente",
