@@ -52,16 +52,20 @@ def _lines(path):
 def measure():
     result = {}
     for alias, root in sorted(roots.TREE_ROOTS.items()):
-        odoo = root / 'odoo'
-        orm = odoo / 'orm'
+        # El identificador NO lleva el nombre de la referencia (directiva del
+        # ejecutor 2026-09-02): lo que nombra es la RAIZ DEL PAQUETE del arbol,
+        # que alli se llama ``odoo/``. La clave del JSON si conserva el nombre
+        # de la fuente, porque describe el arbol medido, no a este guion.
+        package_root = root / 'odoo'
+        orm = package_root / 'orm'
         flat = {
-            name: _lines(odoo / name)
-            for name in FLAT_ORM_18 if (odoo / name).is_file()
+            name: _lines(package_root / name)
+            for name in FLAT_ORM_18 if (package_root / name).is_file()
         }
         result[alias] = {
             'root': str(root),
             'root_exists': root.is_dir(),
-            'odoo_dir': odoo.is_dir(),
+            'odoo_dir': package_root.is_dir(),
             'orm_package': orm.is_dir(),
             'orm_files': len(sorted(orm.glob('*.py'))) if orm.is_dir() else 0,
             'flat_orm_files': flat,

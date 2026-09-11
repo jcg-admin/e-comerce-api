@@ -209,7 +209,10 @@ class TestEnsureOne:
         assert rs.ensure_one() is rs
 
     def test_more_than_one_raises_value_error(self, empty):
-        with pytest.raises(ValueError, match='Expected singleton'):
+        # El mensaje se ancla al repr del recordset, no al `ids=(...)` del
+        # descriptor de `id`: los dos dicen "Expected singleton", asi que sin
+        # el ancla el caso no distingue quien lo lanzo.
+        with pytest.raises(ValueError, match=r'Expected singleton: orm\.recordset\.probe'):
             empty.browse([7, 18]).ensure_one()
 
     def test_empty_also_raises(self, empty):
@@ -318,6 +321,13 @@ class TestIdentity:
 
     def test_repr_is_name_then_ids(self, empty):
         assert repr(empty.browse([7, 18])) == "orm.recordset.probe(7, 18)"
+
+    def test_str_of_a_multi_recordset_is_its_repr(self, empty):
+        # Control que DISCRIMINA el override de ``__str__``. Sin el,
+        # ``Model.__str__`` de Django lee ``self.pk`` -> el descriptor de ``id``
+        # -> ``ValueError`` sobre un recordset de N. Medido: con el override
+        # mutado a ``Model.__str__``, este caso cae y los otros 64 no.
+        assert str(empty.browse([7, 18])) == "orm.recordset.probe(7, 18)"
 
     def test_int_of_a_singleton_is_its_id(self, empty):
         assert int(empty.browse([7])) == 7
