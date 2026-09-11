@@ -1037,6 +1037,18 @@ _DJANGO_FIELD_INIT = models.Field.__init__
 _DJANGO_FIELD_KWARGS = frozenset(
     inspect.signature(_DJANGO_FIELD_INIT).parameters) - {'self'}
 
+#: Los mismos parámetros **en orden**, para nombrar lo que llegó por posición.
+#:
+#: Los veinticinco son ``POSITIONAL_OR_KEYWORD`` (medido sobre la firma), así
+#: que ``Char('Etiqueta')`` y ``Char(verbose_name='Etiqueta')`` son la misma
+#: declaración escrita de dos maneras. La fuente no tiene el problema —su
+#: ``__init__`` recibe ``string`` y el resto por palabra (``odoo19c:
+#: odoo/orm/fields.py:314-317``)—; aquí, sin este mapa, ``_args__`` guardaba
+#: sólo la mitad por palabra y la fusión reconstruía un campo sin su etiqueta.
+_DJANGO_FIELD_POSITIONAL = tuple(
+    name for name in inspect.signature(_DJANGO_FIELD_INIT).parameters
+    if name != 'self')
+
 
 def _field_init_with_copy(self, *args, **kwargs):
     """Anota lo que el autor declaró — ≙ ``self._args__`` de la fuente.
@@ -1051,8 +1063,14 @@ def _field_init_with_copy(self, *args, **kwargs):
     Los parámetros que Django no conoce se retiran antes de delegar. ``copy``
     es uno de ellos y tiene además su atributo propio, porque el duplicado lo
     consulta campo a campo (``copy_data``, ``:5438``) sin pasar por el setup.
+
+    **Lo posicional se nombra antes de anotarse.** ``_args__`` es lo que la
+    fusión de :func:`_field_get_attrs` lee para reconstruir el campo; una
+    etiqueta que llegó como primer posicional y no se nombró se pierde en esa
+    reconstrucción sin que nada lo delate.
     """
-    declared = dict(kwargs)
+    declared = dict(zip(_DJANGO_FIELD_POSITIONAL, args))
+    declared.update(kwargs)
     for key in tuple(kwargs):
         if key not in _DJANGO_FIELD_KWARGS:
             del kwargs[key]
@@ -1083,6 +1101,38 @@ def _field_deconstruct_without_copy(self):
 
 models.Field.deconstruct = _field_deconstruct_without_copy
 
+_DJANGO_FIELD_CLONE = models.Field.clone
+
+
+def _field_clone_with_args(self):
+    """El duplicado conserva lo que el autor declaró.
+
+    ``Field.clone`` de Django reconstruye el campo desde ``deconstruct()``
+    (``django/db/models/fields/__init__.py``), y ``deconstruct`` sólo emite lo
+    que **Django** conoce: el vocabulario de la fuente —``compute``,
+    ``inverse``, ``related``, ``store``— no viaja. Medido sobre un
+    ``CharField('Label', max_length=9, compute='_c')``: ``_args__`` pasa de
+    ``['compute', 'max_length']`` a ``['max_length', 'verbose_name']``.
+
+    Importa porque ``clone`` **no es un rodeo**: es la vía por la que un campo
+    declarado en una base abstracta de Django llega a cada modelo concreto
+    (``ModelBase.__new__`` → ``parent._meta.fields`` → ``field.clone()``). Sin
+    esta línea, una base abstracta que declarara ``compute=`` lo perdía en
+    silencio en todos sus descendientes: el campo quedaba con columna y sin
+    cómputo, que es exactamente la clase de fallo mudo que
+    ``metrica-decide-la-conclusion.md`` describe.
+
+    La fuente no tiene contraparte porque no tiene el problema: allá la
+    herencia **fusiona** ``_args__`` por la MRO (``:395-411``) en vez de
+    duplicar el objeto.
+    """
+    copy = _DJANGO_FIELD_CLONE(self)
+    copy._args__ = dict(self._args__ or {})
+    return copy
+
+
+models.Field.clone = _field_clone_with_args
+
 
 #
 # El bloque de setup del campo — ≙ ``__set_name__`` / ``_get_attrs`` /
@@ -1107,10 +1157,19 @@ def _field_get_attrs(self, model_class, name):
     ≙ ``Field._get_attrs`` (``:414-486``). Recibe lo declarado en ``_args__``
     y devuelve el diccionario con lo que la fuente **deriva** de ello.
 
-    Tres de sus bloques —``compute``, ``related`` y ``precompute``— ya estaban
-    portados en :func:`~orm.fields_nonstored.apply_source_defaults`, que los
-    aplica en el sitio de declaración con el mismo centinela de "no declarado".
-    No se duplican aquí: dos copias del mismo criterio divergirían.
+    **Los tres bloques de derivación viven aquí, que es donde la fuente los
+    pone.** Estuvieron portados en
+    :func:`~orm.fields_nonstored.apply_source_defaults`, que los aplica en el
+    **sitio de declaración** — y ése es justo el orden invertido: allá
+    ``store`` se deriva antes de que exista la cadena de la MRO, así que una
+    redeclaración no puede corregirlo. La fuente deriva **después** de fusionar,
+    dentro de esta misma función (``:443-465``), y por eso el porte los trae.
+
+    Mientras las fachadas de ``fields_textual``/``fields_nonstored`` sigan
+    enrutando al construir, ``apply_source_defaults`` conserva su copia: es la
+    duplicación que ``TASK-API-0417`` cierra al retirar el enrutado. No se
+    retira en este pase porque hoy es lo único que decide qué clase se
+    construye.
     """
     attrs = {}
     modules = []
@@ -1137,6 +1196,51 @@ def _field_get_attrs(self, model_class, name):
         # Un campo de estado se reinicia al duplicar: el duplicado empieza de
         # cero, no en el estado del original.
         attrs['copy'] = attrs.get('copy', False)
+    if attrs.get('compute'):
+        # ``:443-451`` — un calculado no se almacena, se calcula elevado si
+        # tiene columna, no se copia (salvo que tenga columna y sea escribible)
+        # y es de sólo lectura (salvo que tenga inversa).
+        attrs['store'] = store = attrs.get('store', False)
+        attrs['compute_sudo'] = attrs.get('compute_sudo', store)
+        if not (attrs['store'] and not attrs.get('readonly', True)):
+            attrs['copy'] = attrs.get('copy', False)
+        attrs['readonly'] = attrs.get('readonly', not attrs.get('inverse'))
+    if attrs.get('related'):
+        # ``:452-458`` — un related no se almacena, se calcula elevado, no se
+        # copia y es de sólo lectura. Va DESPUÉS del bloque de ``compute`` y
+        # lo pisa: un ``related=`` con ``compute=`` acaba con forma de related.
+        attrs['store'] = store = attrs.get('store', False)
+        attrs['compute_sudo'] = attrs.get('compute_sudo',
+                                          attrs.get('related_sudo', True))
+        attrs['copy'] = attrs.get('copy', False)
+        attrs['readonly'] = attrs.get('readonly', True)
+    if attrs.get('precompute'):
+        # ``:459-465`` — avisa y apaga. ``precompute`` sólo tiene efecto sobre
+        # un calculado (o un related, que es un calculado con otro nombre) y
+        # con columna. Fuera de ahí la fuente lo dice en vez de tragárselo.
+        if not attrs.get('compute') and not attrs.get('related'):
+            warnings.warn(
+                f"precompute attribute doesn't make any sense on non computed "
+                f"field {self}", stacklevel=1)
+            attrs['precompute'] = False
+        elif not attrs.get('store'):
+            warnings.warn(
+                f"precompute attribute has no impact on non stored field "
+                f"{self}", stacklevel=1)
+            attrs['precompute'] = False
+        elif self.many_to_many:
+            # El tercer caso es NUESTRO, y es de stack. Un muchos-a-muchos no
+            # se puede adelantar al ``INSERT``: su valor no vive en una columna
+            # de la fila sino en una tabla intermedia que necesita el ``pk``
+            # para tener a quién apuntar. La fuente no lo tiene porque su ORM
+            # asigna el id antes de ejecutar la cola de recálculo, y por eso
+            # declara ``tag_ids`` con ``precompute=True``
+            # (``odoo19c: account_account.py:107``).
+            warnings.warn(
+                f"precompute attribute has no impact on a many2many field: "
+                f"its join table needs the pk of a row that does not exist "
+                f"yet {self}", stacklevel=1)
+            attrs['precompute'] = False
     if attrs.get('company_dependent',
                  getattr(self, 'company_dependent', False)):
         # El respaldo sobre la instancia es la divergencia de mecanismo: allá
@@ -1198,6 +1302,35 @@ models.Field._get_attrs = _field_get_attrs
 models.Field._setup_attrs__ = _field_setup_attrs
 
 _DJANGO_FIELD_CONTRIBUTE = models.Field.contribute_to_class
+_DJANGO_SET_ATTRIBUTES_FROM_NAME = models.Field.set_attributes_from_name
+
+
+def _field_set_attributes_from_name(self, name):
+    """Un campo sin ``store`` no tiene columna, y por tanto no es concreto.
+
+    ≙ la consecuencia de ``store`` en la fuente: allá un campo con
+    ``store=False`` no declara ``column_type``, así que el motor no le crea
+    columna ni lo pide en un ``SELECT`` (``odoo19c: odoo/orm/fields.py:455``).
+    Aquí el equivalente son las dos banderas que este método deja puestas.
+
+    **El sitio del parche es éste y no ``get_attname_column``**, y no es
+    indiferente: ``ForeignKey`` sobrescribe ``get_attname_column`` y
+    **ninguna** de las dos relacionales sobrescribe este método (medido sobre
+    ``vars(models.ForeignKey)`` y ``vars(models.OneToOneField)``). Parchear el
+    otro dejaría fuera justo a la familia que más barato es equivocarse.
+
+    Django ya deriva ``concrete`` de la columna —``self.concrete = self.column
+    is not None``—, así que basta con anular la columna; las dos líneas se
+    escriben juntas porque el orden del método original no garantiza que la
+    derivación quede después.
+    """
+    _DJANGO_SET_ATTRIBUTES_FROM_NAME(self, name)
+    if self.store is False:
+        self.column = None
+        self.concrete = False
+
+
+models.Field.set_attributes_from_name = _field_set_attributes_from_name
 
 
 #: Marca de «esta instancia se está construyendo».
@@ -1542,14 +1675,113 @@ class ComputedFieldDescriptor(FieldDescriptor):
         instance.modified([field.name])
 
 
+def _collect_field_definitions(field, cls, name):
+    """Las definiciones de ``name`` a lo largo de la MRO, de la base al hijo.
+
+    ≙ ``_init_model_class_fields`` (``odoo19c: odoo/orm/model_classes.py:
+    366-374``), que recoge ``cls._field_definitions`` recorriendo
+    ``reversed(model_cls._model_classes__)`` y acumula en ``definitions[name]``
+    una lista por nombre. Allá el recorrido lo hace el cargador del registro;
+    aquí lo hace este enganche, que es el único momento en que existen a la vez
+    la clase completa y el campo que se está montando.
+
+    **Qué se salta, y por qué son dos razones distintas:**
+
+    - una base que **es** modelo de Django: su campo ya pasó por
+      ``contribute_to_class`` y vive en ``_meta``, no en ``vars(base)`` —lo que
+      queda ahí es un ``DeferredAttribute``—, y Django además **prohíbe**
+      redeclararlo en la subclase (``FieldError: Local field 'x' … clashes``).
+      El recorrido no puede verlo y no hay nada que fusionar;
+    - el propio ``field``: ``ModelBase.__new__`` lo separó de ``new_attrs``
+      antes de crear la clase, así que no está en ``vars(cls)``; la guarda es
+      contra el caso en que sí lo esté.
+
+    Medido en consecuencia: hoy la rama de fusión es **inalcanzable** —cero
+    bases llanas del árbol declaran un ``models.Field``—. Se vuelve alcanzable
+    exactamente cuando ``TASK-API-0418`` retire :class:`NonStored`, que es una
+    clase suelta y por eso hoy no cuenta como definición de campo.
+    """
+    if '_base_fields__' in (field._args__ or {}):
+        # Ya es el campo fusionado: volver a recoger daría una cadena de
+        # cadenas. ≙ la rama ``_direct`` de la fuente, que no reentra.
+        return (field,)
+    chain = []
+    for base in reversed(cls.__mro__):
+        if issubclass(base, models.Model):
+            continue
+        declared = vars(base).get(name)
+        if isinstance(declared, models.Field) and declared is not field:
+            chain.append(declared)
+    chain.append(field)
+    return tuple(chain)
+
+
+def _merge_field_definitions(chain):
+    """Un campo nuevo con la unión de lo declarado — ≙ ``:378-381``.
+
+    La fuente construye ``Field(_base_fields__=tuple(fields_))`` con la clase
+    del **último** eslabón y deja que ``_get_attrs`` fusione los ``_args__`` al
+    montar. La clase la fija el último y no el ``store``: la fuente no enruta
+    por almacenamiento en ningún punto del flujo (``api@0734b906``).
+
+    **La divergencia es que aquí la unión viaja también en el ``__init__``.**
+    Allá basta con ``_base_fields__`` porque el constructor de un campo son
+    tres líneas y no deriva nada. Aquí ``CharField.__init__`` materializa
+    ``MaxLengthValidator`` sobre la ``cached_property`` ``validators``, así que
+    un campo construido vacío y rellenado con ``__dict__.update`` queda con
+    ``max_length=9`` y ``validators=[]`` — medido, y por eso el porte pasa los
+    parámetros de Django por donde Django los espera.
+
+    Lo que el envoltorio de ``__init__`` no conozca lo retira antes de delegar,
+    de modo que el vocabulario de la fuente llega a ``_args__`` sin llegar a
+    Django.
+
+    **Cota declarada:** la reconstrucción sale de ``_args__``, que sólo tiene lo
+    que llegó a ``Field.__init__``. Una relacional pasa ``to`` y ``on_delete``
+    a **su** ``__init__`` y nunca al de ``Field``, así que su reconstrucción
+    falla. No se alcanza hoy —la rama entera es inalcanzable— y su desenlace es
+    ``TASK-API-0419``.
+    """
+    merged = {}
+    for declared in chain:
+        merged.update(declared._args__ or {})
+    merged['_base_fields__'] = chain
+    return type(chain[-1])(**merged)
+
+
 def _field_contribute_to_class(self, cls, name, private_only=False):
     """El cuerpo de ``__set_name__``, en el enganche que este ORM sí ejecuta.
 
-    Va **después** de ``super()``: la fuente fija ``self.name`` antes de
-    montar, y aquí quien lo fija es ``set_attributes_from_name`` de Django.
+    El orden es el de la fuente —recoger por la MRO, fusionar, derivar
+    ``store``, enrutar una vez— y **no** el que este puerto tenía. La versión
+    anterior llamaba a ``super()`` primero, con la razón de que
+    ``set_attributes_from_name`` fija ``self.name``. La razón no se sostiene:
+    :func:`_field_setup_attrs` no lee ``self.name``, ``self.model``,
+    ``self.attname`` ni ``self.column`` — recibe el ``name`` por parámetro.
+    Y el orden invertido **costaba** el campo: ``get_attname_column`` decide la
+    columna leyendo un ``store`` que todavía era el defecto de clase, así que
+    un ``compute=`` acababa con columna y pidiéndose en cada ``SELECT``.
+
+    ``private_only`` se refuerza con el ``store`` derivado. Sin él, un campo sin
+    columna sigue en ``_meta.local_fields`` y el ORM lo pide a la base:
+    ``ProgrammingError``. La forma —``private_only=True`` **y** ``column=None``—
+    es la que el propio stack usa en ``GenericForeignKey``, que declara las dos.
     """
-    _DJANGO_FIELD_CONTRIBUTE(self, cls, name, private_only=private_only)
+    chain = _collect_field_definitions(self, cls, name)
+    if len(chain) > 1:
+        _merge_field_definitions(chain).contribute_to_class(
+            cls, name, private_only=private_only)
+        return
+
+    #: La rama de un solo eslabón ≙ el atajo ``_direct`` de la fuente
+    #: (``:375-377``), con una divergencia declarada: allá un ``related=`` no
+    #: es ``_direct`` (``:404``) y baja por la rama de fusión aunque se declare
+    #: una sola vez. Aquí, con un eslabón, fusionar sería construir un campo
+    #: idéntico al que ya se tiene; la diferencia observable es nula porque
+    #: :func:`_field_get_attrs` deriva lo mismo en los dos caminos.
     self._setup_attrs__(cls, name)
+    _DJANGO_FIELD_CONTRIBUTE(
+        self, cls, name, private_only=private_only or self.store is False)
     _install_field_descriptor(self, cls)
     phase = getattr(self, 'setup_nonrelated__', None)
     if phase is not None:
@@ -1582,15 +1814,24 @@ def _install_field_descriptor(field, cls):
        (con ``__set__``, descriptor de datos); si no → :class:`FieldDescriptor`
        (sin ``__set__``, de NO datos, coste medido **1.00×**). El reparto lo
        justifica el docstring de la subclase.
-    2. **El atributo de clase es un ``DeferredAttribute`` PELADO.** Un
-       ``ForeignKeyDeferredAttribute`` o un ``_CompanyDependentAttribute`` ya
-       son descriptores de datos con su propio camino de lectura y escritura
-       portado; sustituirlos rompería la relación o el eje por empresa. Por eso
-       la condición es de tipo exacto, no ``isinstance``. El campo relacional
-       sobre recordset lo cierra su propio sucesor, **TASK-API-0402**.
+    2. **El atributo de clase es un ``DeferredAttribute`` PELADO, o no hay
+       ninguno.** Un ``ForeignKeyDeferredAttribute`` o un
+       ``_CompanyDependentAttribute`` ya son descriptores de datos con su
+       propio camino de lectura y escritura portado; sustituirlos rompería la
+       relación o el eje por empresa. Por eso la condición es de tipo exacto,
+       no ``isinstance``. El campo relacional sobre recordset lo cierra su
+       propio sucesor, **TASK-API-0402**.
+
+       El ``None`` es el caso del campo **sin columna**, y no es un hueco: el
+       ``contribute_to_class`` de Django cuelga su descriptor sólo ``if
+       self.column`` (verbatim en el paquete instalado), así que un
+       ``store=False`` sale de ahí sin nada. Sin esta rama el atributo se
+       resolvía por la MRO al objeto ``Field`` crudo de la base y una lectura
+       nunca despachaba el cómputo — el campo respondía con el descriptor en
+       vez de con su valor.
     """
     current = cls.__dict__.get(field.attname)
-    if type(current) is not DeferredAttribute:
+    if current is not None and type(current) is not DeferredAttribute:
         return
     descriptor = (ComputedFieldDescriptor if getattr(field, 'compute', None)
                   else FieldDescriptor)
