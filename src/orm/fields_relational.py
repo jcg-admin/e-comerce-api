@@ -79,7 +79,7 @@ from orm.fields_nonstored import (
     projection_or_none,
 )
 from orm.identifiers import NewId
-from orm.registry import IR_MODELS, name_of
+from orm.registry import IR_MODELS, model_by_name, name_of, sentinel_label
 from orm.utils import display_name_of, model_of, record_ids
 from tools.misc import SENTINEL, unique
 from tools.sql import SQL
@@ -516,8 +516,11 @@ def Many2many(*args, check_company=False, store=_UNSET, related=None,
                                                    many_to_many=True)
     if projection is not None:
         return _mark_check_company(projection, check_company)
+    args, source_name = _translate_comodel(args)
     field = _mark_check_company(models.ManyToManyField(*args, **kwargs),
                                 check_company)
+    if source_name is not None:
+        field.comodel_name = source_name
     return annotate_related(field, related, related_attrs)
 
 
@@ -642,6 +645,106 @@ def _apply_ondelete(args, kwargs):
     return args, kwargs, declared
 
 
+def _is_source_name(value):
+    """¿La cadena es un ``_name`` de la fuente, y no una etiqueta de Django?
+
+    El discriminador es la caja, y está medido, no supuesto: los **224**
+    ``_name`` del árbol son todos minúsculas, y **549** de las **580** llamadas
+    con cadena literal declaran la etiqueta de Django con mayúscula en su
+    segmento de modelo (``base.ResPartner``, ``account.AccountAccount``). Un
+    nombre sin punto —``'self'``, el constante recursivo de Django— no es
+    ninguno de los dos y sale por aquí sin tocarse.
+
+    *Ciega a:* una etiqueta de Django escrita en forma ``label_lower``
+    (``'base.respartner'``), que es legal para Django y este discriminador
+    leería como ``_name``. **NO es hipotética, y no es una: son 41** — medidas
+    por AST sobre ``src/``, resolubles con ``apps.get_model``, repartidas en
+    **31 archivos de migración** y 3 fuera. Son legítimas: el estado de una
+    migración rechaza la referencia a la clase (*"Model fields in
+    ModelState.fields cannot refer to a model class"*), así que la cadena en
+    minúsculas es el único camino que le queda. Por eso el discriminador de
+    caja no decide solo: :func:`_deferred_comodel` pregunta después si Django
+    puede resolver la cadena, y si puede la devuelve intacta.
+
+    Los dos vocabularios **no se solapan hoy**: de las 41, **0** son además un
+    ``_name`` de la fuente, así que el orden de las dos consultas de
+    :func:`_deferred_comodel` no desempata nada. El día que una cadena sea las
+    dos cosas, el orden pasa a ser una decisión y no un detalle.
+
+    *Métrica:* llamadas a ``Many2one`` con primer argumento constante de
+    cadena, recorridas por AST sobre ``src/`` y ``addons/`` — **549** etiquetas
+    con mayúscula, **27** ``'self'``, **4** en minúsculas con un punto, **0**
+    en minúsculas con dos o más. El censo por línea que precedió a este medía
+    14 valores y no vio la de la migración (M20 del banco).
+    """
+    return '.' in value and value == value.lower()
+
+
+def _translate_comodel(args):
+    """Sustituye el ``_name`` punteado del primer posicional, si lo es.
+
+    Comparten mecanismo ``Many2one`` y ``Many2many``: los dos acaban en un
+    campo relacional de Django que resuelve su destino por
+    ``lazy_related_operation`` (``related.py:80-86``), así que el nombre
+    punteado les rompe igual y el asa los arregla igual. **No** lo comparte
+    ``One2many``, que resuelve con ``apps.get_model(self.comodel_name)``
+    (:func:`_one2many_comodel`) — otro mecanismo, otro puerto, sucesor
+    declarado.
+
+    Devuelve ``(args, source_name)``; ``source_name`` es ``None`` cuando no
+    había nada que traducir.
+    """
+    if args and isinstance(args[0], str) and _is_source_name(args[0]):
+        return (_deferred_comodel(args[0]),) + args[1:], args[0]
+    return args, None
+
+
+def _deferred_comodel(comodel):
+    """Lo que se le entrega a Django en lugar del ``_name`` punteado.
+
+    Dos caminos, uno por orden de declaración, y cada uno con su anulación:
+
+    - **destino-primero** — el ``_name`` ya está en el registro, así que se
+      entrega su **etiqueta** de Django y éste resuelve en el acto
+      (``apps/registry.py:417-426``, rama ``else``). Nada queda pendiente.
+
+    Siempre se devuelve una **cadena**, nunca la clase, y no es cosmético: el
+    estado de una migración la rechaza — *"Model fields in ModelState.fields
+    cannot refer to a model class"* (``django/db/migrations/state.py``) —, y
+    una migración de este árbol declara sus dos campos por cadena justo por
+    eso.
+    - **referente-primero y auto-referencia** — el destino todavía no existe,
+      así que se entrega la etiqueta centinela; la resolución la hace
+      :func:`~orm.registry.flush_sentinel` cuando el destino emita
+      ``class_prepared``.
+
+    Una clase registrada con ``register_abstract`` no tiene ``_meta`` y no
+    puede ser destinataria de una clave foránea: para ella también vale el
+    centinela, que nunca resolverá — es el caso que el check de existencia
+    porta como sucesor, no un silencio.
+    """
+    registered = model_by_name(comodel)
+    if registered is not None and getattr(registered, '_meta', None) is not None:
+        return registered._meta.label_lower
+    if comodel.count('.') == 1:
+        # Segunda vía del destino-primero: la cadena puede ser ya la etiqueta
+        # de Django de un modelo cargado —que es como una **migración** tiene
+        # que nombrarlo— y entonces no hay nada que traducir.
+        # ``require_ready=False`` porque en Fase 2 ``models_ready`` aún es
+        # False y el modelo ya está registrado.
+        try:
+            apps.get_model(comodel, require_ready=False)
+        except (LookupError, ValueError):
+            # silent OK because la excepcion ES la respuesta: no hay modelo de
+            # Django con esa etiqueta, asi que la cadena es un ``_name`` de la
+            # fuente y sigue al centinela. Propagarla convertiria una pregunta
+            # en un fallo.
+            pass
+        else:
+            return comodel
+    return sentinel_label(comodel)
+
+
 def Many2one(*args, store=_UNSET, company_dependent=False,
              check_company=False, related=None, **kwargs):
     """``fields.Many2one`` — ≙ el de la referencia: con columna, sin ella o por empresa.
@@ -715,6 +818,10 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
                              comodel=_comodel_label(to), **kwargs),
             check_company)
     args, kwargs, resolved_ondelete = _apply_ondelete(args, kwargs)
+    # DESPUES de ``_apply_ondelete``, y no antes: su guarda de ``:289`` compara
+    # la CADENA declarada contra ``IR_MODELS``, que lleva los ``_name`` de la
+    # fuente. Traducir primero la dejaria sin nada que comparar.
+    args, source_name = _translate_comodel(args)
     if store:
         field = _mark_check_company(models.ForeignKey(*args, **kwargs),
                                     check_company)
@@ -729,6 +836,12 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
     # (`test_orm/tests/test_fields.py:4230-4256`, cuatro casos). Un porte que
     # solo tradujera el kwarg dejaria ciegos a los cuatro.
     field.ondelete = resolved_ondelete
+    if source_name is not None:
+        # ``comodel_name`` es el atributo que la fuente declara
+        # (``odoo19c: odoo/orm/fields_relational.py:36``) y el unico sitio donde
+        # el nombre punteado sobrevive: lo que Django guarda en
+        # ``remote_field.model`` es el asa, hasta que se resuelve a la clase.
+        field.comodel_name = source_name
     return annotate_related(field, related, related_attrs)
 
 
