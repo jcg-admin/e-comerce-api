@@ -317,6 +317,16 @@ class NonStored:
 _UNSET = object()
 
 
+#: Las claves que ``_declared_source_vocabulary`` saca de ``kwargs``. Se
+#: declaran aparte porque hace falta saber CUÁLES venía antes de sacarlas: el
+#: ``pop`` destruye esa información y ``annotate_related`` la necesita para
+#: distinguir «el autor lo declaró» de «el default de clase ya lo dice».
+_SOURCE_VOCABULARY_KEYS = frozenset({
+    'compute', 'inverse', 'recursive', 'precompute', 'compute_sudo',
+    'related_sudo', 'readonly', 'store', 'copy',
+})
+
+
 def _declared_source_vocabulary(kwargs, related):
     """Saca de ``kwargs`` el vocabulario de la fuente, UNA vez.
 
@@ -337,7 +347,9 @@ def _declared_source_vocabulary(kwargs, related):
     campo corriente tiene que seguir viajando en ``kwargs``. Sólo se retira
     cuando un bloque va a pisarlo.
     """
+    declared_keys = _SOURCE_VOCABULARY_KEYS & frozenset(kwargs)
     declared = {
+        'declared_keys': declared_keys,
         'compute': kwargs.pop('compute', None),
         'inverse': kwargs.pop('inverse', None),
         'recursive': kwargs.pop('recursive', _UNSET),
@@ -468,7 +480,8 @@ def apply_source_defaults(related, kwargs, many_to_many=False):
     portaba; con las tres, mentiría.
     """
     declared = _declared_source_vocabulary(kwargs, related)
-    attrs = {'related_declared': bool(related)}
+    attrs = {'related_declared': bool(related),
+             'declared_keys': declared['declared_keys']}
 
     #: Orden de la fuente: ``compute``, luego ``related``, luego
     #: ``precompute``. Importa: los dos primeros escriben ``store`` y el
@@ -544,20 +557,38 @@ def annotate_related(field, related, attrs):
     tragarse (``orm/fields_textual.py``).
     """
     field.related = related
-    #: La salida temprana existe para NO tocar el campo corriente: sin
-    #: ``related`` ni ``compute``, el diccionario trae sólo ``store`` y los
-    #: defaults de clase (``orm/fields.py``) ya lo dicen. Anotar ahí pondría un
-    #: atributo de instancia en cada uno de los miles de campos del árbol para
-    #: repetir lo que la clase ya declara.
+    #: ≙ ``odoo19c: odoo/orm/fields.py:500`` — ``self.__dict__.update(attrs)``,
+    #: **incondicional**: la fuente no pregunta si el campo es ``related`` ni
+    #: si es calculado, aplica todo lo que el autor declaró. Aquí vivía una
+    #: salida temprana para la rama llana que la fuente no tiene, y con ella se
+    #: perdían en silencio ``readonly`` (645 declaraciones en la referencia),
+    #: ``inverse`` (35), ``recursive`` (3) y ``compute_sudo`` (1) — el default
+    #: de clase (``orm/fields.py:1915-1945``) devolvía justo el valor que el
+    #: autor quiso cambiar. Ver :ref:`h-api-1101`.
     #:
-    #: Un calculado SÍ entra: su vocabulario es lo que
+    #: Lo que SÍ se conserva de aquel razonamiento es su restricción, no su
+    #: filtro: un campo que no declara nada no gana un atributo de instancia
+    #: por cada clave del vocabulario. La fuente tampoco lo hace — su ``attrs``
+    #: sale de ``_get_attrs`` (``:414-430``), que arranca con
+    #: ``attrs.update(self._args__)``: **sólo lo que el autor pasó**, y los
+    #: bloques de ``compute``/``related`` añaden defaults únicamente en esas
+    #: dos ramas. ``declared_keys`` es el porte de esa asimetría.
+    #:
+    #: Un calculado entra entero: su vocabulario es lo que
     #: :class:`~orm.registry._DerivedCollector` lee para unir el campo con el
     #: ``_depends`` de su método. Sin la anotación, ``field.compute`` sería
     #: ``None`` y el mapa saldría vacío — que es lo que el censo midió antes de
     #: este porte (44 métodos, 0 campos, 0 aristas).
-    if not related and not attrs.get('compute'):
-        return field
-    for attribute, value in attrs.items():
+    declared_keys = attrs.get('declared_keys', frozenset())
+    landing = (attrs if (related or attrs.get('compute'))
+               else {key: value for key, value in attrs.items()
+                     if key in declared_keys})
+    for attribute, value in landing.items():
+        #: Contabilidad del mecanismo, no vocabulario de la fuente: viaja en el
+        #: diccionario para que esta función sepa qué declaró el autor, y no
+        #: aterriza en el campo.
+        if attribute == 'declared_keys':
+            continue
         setattr(field, attribute, value)
     #: El campo queda buscable por su cadena, que es lo que navegar la FK a
     #: mano no da — la razón por la que este mecanismo se porta en vez de
