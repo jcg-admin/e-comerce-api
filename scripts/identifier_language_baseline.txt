@@ -4,8 +4,6 @@
 addons/account/apps.py::_EXTENSIONES
 addons/account/apps.py::ruta
 addons/account/controllers/views.py::codigo
-addons/account/models/account_analytic_plan.py::_account_prefix_categ_bonus
-addons/account/models/account_analytic_plan.py::product_categ
 addons/account/models/account_document_import_mixin.py::_enc
 addons/account/models/account_incoterms.py::AccountIncoterms
 addons/account/models/account_move.py::no_listos
@@ -41,9 +39,7 @@ addons/account/models/account_tax.py::redondear
 addons/account/models/account_tax.py::signo
 addons/account/models/account_tax.py::sumar_base
 addons/account/models/account_tax.py::valor
-addons/account/models/chart_template.py::categ_field
 addons/account/models/ir_attachment.py::adjunto
-addons/account/models/product.py::categ
 addons/account/models/product.py::clave
 addons/account/models/product.py::cuenta
 addons/account/models/product.py::cuentas
@@ -81,7 +77,6 @@ addons/account/models/sequence_mixin.py::valores
 addons/account/models/template_generic_coa.py::GenericCoaChartTemplate
 addons/account/models/template_generic_coa.py::get_generic_coa_res_company
 addons/account/models/template_generic_coa.py::get_generic_coa_template_data
-addons/account/report/account_invoice_report.py::product_categ_id
 addons/account/wizard/account_resequence.py::in_elipsis
 addons/account/wizard/setup_wizards.py::cambiados
 addons/account/wizard/setup_wizards.py::excluido
@@ -310,7 +305,6 @@ addons/hr_hourly_cost/apps.py::_EXTENSIONES
 addons/hr_hourly_cost/apps.py::ruta
 addons/hr_recruitment/apps.py::_EXTENSIONES
 addons/hr_recruitment/apps.py::ruta
-addons/hr_recruitment/wizard/talent_pool_add_applicants.py::categ
 addons/hr_recruitment_skills/apps.py::_EXTENSIONES
 addons/hr_recruitment_sms/apps.py::_EXTENSIONES
 addons/hr_timesheet/apps.py::_EXTENSIONES
@@ -394,10 +388,7 @@ addons/portal/controllers/main.py::valor
 addons/portal/controllers/serializers.py::CAMPOS_EDITABLES
 addons/portal/controllers/serializers.py::_NOMBRES_DE_MODELO
 addons/portal/controllers/serializers.py::nombre
-addons/product/models/product_pricelist_item.py::categ
-addons/product/models/product_product.py::categ
 addons/product/models/product_template.py::TYPE_CONSU
-addons/product/models/product_template.py::categ
 addons/product/models/product_template.py::unidad
 addons/product_expiry/apps.py::_EXTENSIONES
 addons/product_expiry/apps.py::ruta
@@ -502,8 +493,6 @@ addons/stock/models/stock_location.py::candidatos
 addons/stock/models/stock_location.py::cantidad
 addons/stock/models/stock_location.py::cantidad_por_ubicacion
 addons/stock/models/stock_location.py::capacidad
-addons/stock/models/stock_location.py::categ
-addons/stock/models/stock_location.py::categ_ids
 addons/stock/models/stock_location.py::categoria
 addons/stock/models/stock_location.py::categorias
 addons/stock/models/stock_location.py::clave
@@ -536,7 +525,6 @@ addons/stock/models/stock_location.py::pesos
 addons/stock/models/stock_location.py::positivos
 addons/stock/models/stock_location.py::previsto
 addons/stock/models/stock_location.py::primera
-addons/stock/models/stock_location.py::product_categ_selectable
 addons/stock/models/stock_location.py::propia
 addons/stock/models/stock_location.py::raiz
 addons/stock/models/stock_location.py::rama
@@ -1097,7 +1085,6 @@ addons/stock/models/stock_quant.py::plantilla
 addons/stock/models/stock_quant.py::por_lote
 addons/stock/models/stock_quant.py::por_paquete
 addons/stock/models/stock_quant.py::previo
-addons/stock/models/stock_quant.py::product_categ
 addons/stock/models/stock_quant.py::prohibidos
 addons/stock/models/stock_quant.py::propia
 addons/stock/models/stock_quant.py::recomendada
@@ -1239,7 +1226,6 @@ addons/website/models/website_rewrite.py::vistos
 addons/website_mass_mailing/controllers/subscribe.py::ser
 addons/website_mass_mailing/controllers/unsubscribe.py::ser
 addons/website_sale/models/crm_team.py::agregado
-addons/website_sale_wishlist/controllers/serializers.py::categ
 addons/website_sale_wishlist/controllers/serializers.py::get_orisha_name
 addons/website_sale_wishlist/controllers/serializers.py::orisha_name
 src/addons/base/data/cron.py::accion
@@ -1442,7 +1428,6 @@ src/tools/set_expression.py::todo
 src/tools/sql.py::fila
 tests/conftest.py::_sembrar_al_inicio_de_sesion
 tests/factories/order_factory.py::estado
-tests/factories/product_factory.py::categ
 tests/integration/account/test_print_checks_endpoint.py::journal_sin_layout
 tests/integration/authz/test_capability_sugar.py::resolver
 tests/integration/authz/test_me_menu.py::catalogo
@@ -2197,11 +2182,6 @@ tests/integration/sale/test_status_vocabulary_e2.py::test_las_etiquetas_siguen_d
 tests/integration/sale/test_status_vocabulary_e2.py::test_un_draft_proyecta_draft_y_un_cancel_cancelado
 tests/integration/sale/test_status_vocabulary_e2.py::venta
 tests/integration/sale/test_stock_lot.py::test_gather_incluye_los_quants_en_cero
-tests/integration/sale/test_stock_product_quantities.py::child_categ
-tests/integration/sale/test_stock_product_quantities.py::from_own_categ
-tests/integration/sale/test_stock_product_quantities.py::parent_categ
-tests/integration/sale/test_stock_product_surface.py::child_categ
-tests/integration/sale/test_stock_product_surface.py::parent_categ
 tests/integration/sale/test_stock_product_surface_extra.py::con_ruta
 tests/integration/sale/test_stock_product_surface_extra.py::entrantes
 tests/integration/sale/test_stock_product_surface_extra.py::quedan
@@ -2270,16 +2250,6 @@ tests/integration/website/test_static_content_endpoints.py::test_buyer_recibe_40
 tests/integration/website/test_static_content_endpoints.py::test_get_inexistente_loud_404
 tests/integration/website/test_static_content_endpoints.py::test_slug_duplicado_loud
 tests/integration/website_sale_wishlist/test_wishlist.py::test_re_add_after_soft_delete_reactiva
-tests/unit/account/test_account_analytic_distribution_model.py::TestProductAndProductCategFields
-tests/unit/account/test_account_analytic_distribution_model.py::categ
-tests/unit/account/test_account_analytic_distribution_model.py::test_account_prefix_product_and_product_categ_exist_as_real_columns
-tests/unit/account/test_account_analytic_distribution_model.py::test_product_categ_can_be_set_and_read_back
-tests/unit/account/test_account_analytic_plan.py::TestAccountPrefixAndProductCategFields
-tests/unit/account/test_account_analytic_plan.py::TestGetScoreWrappedWithAccountPrefixAndProductCateg
-tests/unit/account/test_account_analytic_plan.py::categ
-tests/unit/account/test_account_analytic_plan.py::test_product_categ_can_be_set_and_read_back
-tests/unit/account/test_account_analytic_plan.py::test_product_categ_matching_adds_one_point
-tests/unit/account/test_account_analytic_plan.py::test_without_account_prefix_nor_product_categ_only_the_base_score_applies
 tests/unit/account/test_account_bank_statement_and_locks.py::TestAccountIncoterms
 tests/unit/account/test_account_core.py::test_division_incluido
 tests/unit/account/test_account_core.py::test_division_no_incluido
