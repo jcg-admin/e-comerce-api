@@ -83,7 +83,7 @@ from orm.environments import (
 from orm.commands import ManyToManyLink, ManyToManySet, One2manyChild
 from orm import registry
 from orm.domains import Domain, to_q
-from orm.fields import convert_to_display_name
+from orm.fields import FieldDescriptor, convert_to_display_name
 from orm.fields_textual import Char
 from orm.identifiers import NewId
 from orm.fields_nonstored import NonStored, non_stored_fields
@@ -3979,15 +3979,14 @@ class BaseModel(Model):
        medida y la gobierna la tarea **#329**).
     3. El recordset **no se construye con** ``Model.__init__``. Ver
        :meth:`_from_ids`.
-    4. **Una fila que construye Django NO lleva la terna, y seis de los ocho
-       dunder portados revientan sobre ella.** Medido sobre
-       ``RecordsetProbe(id=7, label='x')``: ``hasattr(row, '_ids')`` es
-       ``False``, y ``bool`` · ``len`` · ``repr`` · ``hash`` · ``str`` ·
-       ``iter`` levantan ``AttributeError: … has no attribute '_ids'``. Sólo
-       ``int`` y ``id`` sobreviven, los dos por el relevo de
-       :class:`IdFromIds` al descriptor original. Es la consecuencia más
-       afilada de **TASK-API-0402**: mientras no aterrice, derivar de esta base
-       es nominal para todo lo que no venga de :meth:`browse`.
+    4. **Una fila que construye Django lleva la terna desde TASK-API-0402.**
+       Antes no la llevaba, y seis de los ocho dunder portados reventaban
+       sobre ella (medido entonces sobre ``RecordsetProbe(id=7, label='x')``:
+       ``bool`` · ``len`` · ``repr`` · ``hash`` · ``str`` · ``iter`` con
+       ``AttributeError: … has no attribute '_ids'``). Hoy ``__init__`` y
+       ``from_db`` instalan ``(env, (pk,), (pk,))`` —la forma de ``browse``
+       para un id, ``:5897``— y ``save`` la refresca cuando el pk nace. Ver
+       :meth:`_install_singleton_triple`.
 
     **Cobertura del porte, re-derivada contra el banco** — la medición vive en
     ``scripts/workbench/basemodel-contract-20260911T030334/outputs/coverage_derived.txt``.
@@ -4110,6 +4109,49 @@ class BaseModel(Model):
         abstract = True
 
     # === construcción =====================================================
+
+    def __init__(self, *args, **kwargs):
+        """La fila que Django construye ES un recordset de uno — ≙ ``:5871``.
+
+        La fuente tiene UN constructor y siempre instala la terna
+        (``self.env``, ``self._ids``, ``self._prefetch_ids``; ``:5871-5880``).
+        Aquí Django aporta dos caminos más —``cls(*values)`` y ``from_db``—
+        y, hasta TASK-API-0402, ninguno la instalaba: los tres son ranuras
+        de ``__slots__`` y una fila que no pasaba por ``_from_ids`` reventaba
+        con ``AttributeError`` en ``__bool__``, ``__len__`` y en cada lector
+        de ``self._ids`` (medido: ``_prepare_related_fields_for_save`` de
+        Django hace ``if not obj`` sobre el destino de una FK). La forma es la
+        que ``browse`` construye para un id —``self.__class__(self.env, ids,
+        ids)``, ``:5897``—: ``_ids == (pk,)`` y ``_prefetch_ids == _ids``. El
+        entorno es el ambiente (:func:`~orm.environments.env`), la misma
+        adaptación que :class:`RecordCache` declara.
+        """
+        super().__init__(*args, **kwargs)
+        self._install_singleton_triple()
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        """La fila que llega de una consulta lleva la misma terna que ``:5871``."""
+        record = super().from_db(db, field_names, values)
+        record._install_singleton_triple()
+        return record
+
+    def _install_singleton_triple(self):
+        """``(env, (pk,), (pk,))`` — el recordset de uno que la fila ES."""
+        self.env = env()
+        self._ids = (self.pk,)
+        self._prefetch_ids = self._ids
+
+    def save(self, *args, **kwargs):
+        """El pk nace al insertar y la terna lo sigue.
+
+        ≙ ``create`` (``:4744``), que devuelve ``self.browse(ids)`` con los ids
+        recién insertados: allá el recordset nuevo se construye con el id
+        real; aquí la fila es la misma instancia y su terna se rehace.
+        """
+        super().save(*args, **kwargs)
+        if self._ids != (self.pk,):
+            self._install_singleton_triple()
 
     @classmethod
     def _from_ids(cls, env, ids, prefetch_ids):
@@ -4360,10 +4402,22 @@ class BaseModel(Model):
                 self.ensure_one()
                 raise AssertionError("unreachable")
             return getattr(field, 'falsy_value', None)
-        name = getattr(field, 'attname', None) or field.name
-        descriptor = getattr(type(self), name, None)
+        # ``:1663-1667`` — con UNA fila la fuente devuelve el valor del campo
+        # convertido a registro: sobre un ``Many2one`` es el corecord, nunca
+        # su id. Aquí el descriptor que devuelve la fila cuelga de
+        # ``field.name`` (``ForwardManyToOneDescriptor``); el de ``attname``
+        # es la COLUMNA y devuelve el entero — medido en la sonda A4
+        # (``probe_related_resolves_after_setup_phase.py``: ``partner`` leído
+        # por ``partner_id`` daba ``int`` y ``_end_of_chain`` levantaba
+        # ``TypeError``). El descriptor de cómputo se instala bajo ``attname``
+        # (``orm/fields.py:1848``), que coincide con ``name`` en un campo sin
+        # columna; se prefiere sólo cuando es el nuestro.
+        attname = getattr(field, 'attname', None) or field.name
+        descriptor = getattr(type(self), attname, None)
+        if not isinstance(descriptor, FieldDescriptor):
+            descriptor = getattr(type(self), field.name, None)
         if descriptor is None or not hasattr(descriptor, '__get__'):
-            return getattr(self, name)
+            return getattr(self, field.name)
         return descriptor.__get__(self, type(self))
 
     @property
@@ -4539,12 +4593,14 @@ class BaseModel(Model):
         * ``records.fetch([field_name])`` sobre ``PREFETCH_MAX`` — ``fetch`` no
           está portado (``odoo19c: :3775-3818``). Tarea **TASK-API-0399**.
         * la rama **relacional** devuelve allá ``getter(records)`` con el
-          recordset de N, que ``_Relational.__get__``
-          (``odoo19c: odoo/orm/fields_relational.py:42``) resuelve por su cuenta
-          — no cae en la guarda de tamaño. Aquí el comodelo sólo puede dar un
-          recordset si él mismo deriva de :class:`BaseModel`; mientras las filas
-          que Django construye no lleven la terna, la unión no se puede
-          expresar. Tarea **TASK-API-0402**.
+          recordset de N: ``_Relational.__get__``
+          (``odoo19c: odoo/orm/fields_relational.py:42-46``) delega en la base
+          sólo con ``len(records._ids) <= 1`` y con N ids arma la unión por su
+          cuenta, sin caer en la guarda de tamaño de ``Field.__get__``
+          (``:1653-1661``). Aquí :class:`~orm.fields.FieldDescriptor` tiene
+          la guarda de tamaño y **no** la rama multi-registro: con N ids
+          levanta ``ensure_one`` en vez de devolver la unión. Tarea
+          **TASK-API-0401** (extender la guarda al acceso llano).
         """
         if not func:
             return self                 # support for an empty path of fields
@@ -4561,18 +4617,16 @@ class BaseModel(Model):
                     "(odoo19c: odoo/orm/models.py:3775-3818) — TASK-API-0399")
             field = records._fields[field_name]
             if field.relational:
-                # La guarda NO puede ser ``issubclass(comodel, BaseModel)``: mide
-                # la CLASE y el defecto esta en la INSTANCIA. El descriptor de
-                # clave foranea de Django devuelve una fila construida por
-                # ``Model.from_db``, que no lleva ``_ids`` ni aunque su clase
-                # derive de esta base — asi que ``value._ids`` daria
-                # ``AttributeError`` en vez de este rechazo. Se rehusa sin
-                # condicion hasta que TASK-API-0402 haga que esas filas lleven
-                # la terna.
+                # La fuente devuelve ``getter(records)`` y deja la unión a
+                # ``_Relational.__get__`` (``fields_relational.py:42-46``).
+                # Nuestro descriptor no tiene esa rama multi-registro: sobre N
+                # ids cae en la guarda de tamaño y levanta ``ensure_one``, así
+                # que la unión no se puede expresar todavía. Se rehúsa sin
+                # condición hasta TASK-API-0401.
                 raise NotImplementedError(
-                    f"mapped() relacional sobre {field.name!r} exige que la fila que "
-                    "Django construye lleve la terna del recordset — tarea "
-                    "TASK-API-0402")
+                    f"mapped() relacional sobre {field.name!r} exige la rama "
+                    "multi-registro de _Relational.__get__ (odoo19c: "
+                    "odoo/orm/fields_relational.py:42-46) — tarea TASK-API-0401")
             return [record._read_field(field) for record in records]
 
         if self:

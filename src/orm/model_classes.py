@@ -1078,6 +1078,175 @@ def ensure_model_class_attributes():
     return tocados
 
 
+def _fields_with_setup(model_cls):
+    """Los campos del modelo que tienen fase de setup — ≙ ``model_cls._fields``.
+
+    Allá ese universo sólo contiene ``Field`` (``odoo19c: odoo/orm/models.py``,
+    ``_fields: dict[str, Field]``). Aquí son las tres listas hacia adelante de
+    ``_meta`` —concretos con los heredados, ``many_to_many`` y ``private_fields``—
+    y NO ``get_fields()``: ésa además enumera las relaciones inversas
+    (``ManyToOneRel``…), que no son campos de la fuente, y para listarlas
+    construye ``_relation_tree`` sobre TODOS los modelos del registro. Medido
+    (``probe_which_test_module_breaks_a_fk.py``): con ``get_fields()`` la
+    fase reventaba con ``'NoneType' object has no attribute '_meta'`` al
+    correr sobre el modelo *through* de un M2M, que Django registra a mitad
+    de la construcción de su dueño — un árbol de relaciones con un modelo a
+    medias. Las tres listas no tocan ese árbol
+    (``options.py:_get_fields(reverse=False)``).
+    """
+    opts = model_cls._meta
+    return [f for f in (*opts.fields, *opts.many_to_many, *opts.private_fields)
+            if isinstance(f, models.Field)]
+
+
+def _is_setup_done(model_cls):
+    """El marcado de la fuente, leído en la clase y no por la MRO.
+
+    ``_setup_done__`` vive en ``vars(model_cls)``: un hijo concreto de un
+    modelo concreto no hereda el «hecho» del padre, igual que allá cada
+    ``model_cls`` del registro lleva el suyo. Sin entrada = no hecho, que es
+    el estado con que ``add_to_registry`` deja al modelo (``:228``).
+    """
+    return vars(model_cls).get('_setup_done__', False)
+
+
+def mark_model_for_setup(model_cls):
+    """≙ ``registry[model_name]._setup_done__ = False`` (``:228``).
+
+    Es lo que ``add_to_registry`` hace al cargar un modelo y lo que
+    ``_setup_models__`` hace con los descendientes por ``_inherit`` de un
+    módulo cargado (``odoo19c: odoo/orm/registry.py:426-433``). Aquí lo
+    disparan ``class_prepared`` (el modelo nuevo) y :func:`extend_model` (el
+    ``_inherit``). El barrido perezoso lo recoge.
+    """
+    model_cls._setup_done__ = False
+    ensure_field_setup.pending = True
+
+
+def prepare_field_setup(model_cls):
+    """Reabre la fase de setup de cada campo — ≙ ``_setup`` paso 4 (``:432``).
+
+    La fuente, tras fijar ``_setup_done__ = True`` en el modelo, recorre
+    ``for field in model_cls._fields.values(): field.prepare_setup()``. Es lo
+    que pone ``_setup_done = False`` en el campo, cuyo defecto de clase es
+    ``True`` (``odoo19c: odoo/orm/fields.py:264``): sin esta pasada,
+    ``field.setup(model)`` retorna en su primera línea y no instala nada.
+    Medido por conducta antes de portarla
+    (``probe_related_setup_phase_resolves.py``: ``setup_done=True``,
+    ``compute=None`` tras la llamada).
+
+    Un modelo ya hecho retorna en la primera línea, como ``_prepare_setup``
+    (``:331``): la fase es incremental, y un campo ya instalado no se reabre
+    hasta que alguien vuelva a marcar su modelo.
+
+    :returns: cuántos campos quedaron reabiertos.
+    """
+    if _is_setup_done(model_cls):
+        return 0
+    fields_ = _fields_with_setup(model_cls)
+    for field in fields_:
+        field.prepare_setup()
+    return len(fields_)
+
+
+def setup_fields(model_cls):
+    """La fase que completa cada campo — ≙ ``_setup_fields`` (``:511-528``).
+
+    Docstring de la fuente, verbatim: *"Setup the fields, except for
+    recomputation triggers."* Allá construye ``model = model_cls(env, (), ())``
+    y llama ``field.setup(model)`` por campo; aquí ``setup`` lee la clase
+    (``walk_related_chain`` recorre ``_meta``), así que se le pasa la clase.
+
+    Lo que la fase deja instalado en un ``related=``: ``compute`` (la
+    proyección), ``inverse`` si es escribible y ``search`` si no tiene columna
+    (``setup_related``, ``:604-660``). Sin ella un ``related`` declarado sobre
+    un campo de Django tenía ``compute=None`` y la lectura caía a
+    ``default_get`` (medido: ``probe_related_on_django_field_at_read.py``).
+
+    La rama de la fuente que traga el error de un campo **manual** (``:517-527``,
+    ``pop_field`` sobre ``bad_fields``) no tiene receptor: no hay campos
+    manuales en este árbol. Un ``related`` cuya cadena no resuelve levanta,
+    como allá para un campo declarado en código.
+
+    Cierra con ``_setup_done__ = True`` (``:429``): el modelo queda hecho hasta
+    que :func:`mark_model_for_setup` lo reabra.
+
+    :returns: cuántos campos pasaron por ``setup``.
+    """
+    if _is_setup_done(model_cls):
+        return 0
+    fields_ = _fields_with_setup(model_cls)
+    for field in fields_:
+        field.setup(model_cls)
+    model_cls._setup_done__ = True
+    return len(fields_)
+
+
+@receiver(class_prepared, dispatch_uid='orm.model_classes.setup_fields')
+def _setup_fields_on_prepared(sender, **kwargs):
+    """Marca el modelo recién construido — ≙ ``add_to_registry`` (``:228``).
+
+    Antes del arranque sólo marca: la fase de la fuente corre cuando TODOS
+    los modelos de un módulo están (``_setup_models__`` tras
+    ``registry.load``, ``loading.py:187-193``), y un ``related`` cruza
+    modelos. El equivalente aquí es el barrido perezoso de
+    :func:`ensure_field_setup`, que recoge lo marcado en cuanto
+    ``apps.ready``.
+
+    Un modelo construido DESPUÉS del arranque —un test, ``isolate_apps``—
+    también SÓLO se marca, y lo completa el mismo barrido perezoso en su
+    primer acceso a campo. Una versión anterior lo encolaba con
+    ``lazy_model_operation`` para completarlo en ``register_model``; medido
+    (``probe_which_test_module_breaks_a_fk.py``), ese momento cae **dentro**
+    de ``ModelBase.__new__`` del dueño cuando el modelo es el *through*
+    auto-creado de un M2M (``related.py:2000`` → ``register_model`` →
+    ``do_pending_operations``): la fase corría sobre un modelo a medias. La
+    fuente no tiene ese problema porque nunca hace setup por clase — lo hace
+    el cargador, después del módulo (``loading.py:193``) — y el barrido
+    perezoso es ese «después».
+    """
+    mark_model_for_setup(sender)
+
+
+def ensure_field_setup():
+    """El barrido — ≙ ``_setup_models__`` sobre los modelos marcados.
+
+    La fuente lo corre desde el CARGADOR: incremental tras cada módulo
+    (``odoo19c: odoo/modules/loading.py:173,184,193,285``) y completo al
+    terminar (``:488``, tras ``registry.loaded = True``). El cargador de aquí
+    es ``apps.populate``, y Django no expone el momento «tras el último
+    ``ready()``»: el ``ready()`` de ``base`` corre ANTES de que ``crm``
+    aplique sus ``extend_model`` (medido: ``FieldDoesNotExist: CrmTeam has
+    no field named 'lead_properties_definition'`` al barrer desde ahí). Por
+    eso el barrido es **perezoso**: lo dispara el primer consumidor de un
+    campo —el descriptor— cuando ``apps.ready``, que es el mismo criterio con
+    que :func:`orm.registry._ensure_seeded` cubre lo que llegó tarde.
+
+    Orden de la fuente, conservado (``setup_model_classes``, ``:318-323``):
+    primero reabrir TODOS los marcados, sólo después completarlos — un
+    ``related`` de A puede cruzar a B, y B tiene que estar reabierto antes.
+
+    Idempotente y barato cuando no hay nada marcado: ``pending`` es la
+    bandera que los marcadores levantan y este barrido baja.
+
+    :returns: cuántos campos pasaron por ``setup`` — para medir, no suponer.
+    """
+    if not apps.ready:
+        return 0
+    ensure_field_setup.pending = False
+    models_ = [m for m in apps.get_models(include_auto_created=True)
+               if not _is_setup_done(m)]
+    for model_cls in models_:
+        prepare_field_setup(model_cls)
+    return sum(setup_fields(model_cls) for model_cls in models_)
+
+
+#: Levantada por :func:`mark_model_for_setup`; bajada por el barrido. Nace en
+#: ``True`` porque todo modelo cargado antes de importar este módulo está sin
+#: hacer y sin marca en su ``__dict__`` (la clase de ``H-API-577``).
+ensure_field_setup.pending = True
+
+
 def extend_model(*destino, campos=None, metodos=None, overrides=None,
                  propiedades=None, selection_add=None, ondelete=None,
                  indexes=None, luego=None):
@@ -1161,6 +1330,14 @@ def extend_model(*destino, campos=None, metodos=None, overrides=None,
             add_meta_index(modelo, indice)
         if luego is not None:
             luego(modelo)
+        # ≙ ``_setup_models__`` marca a los descendientes del módulo cargado
+        # (``registry.py:426-433``): el destino de un ``_inherit`` se vuelve a
+        # marcar —un campo colgado aquí no pasó por ``class_prepared``— y lo
+        # completa el barrido perezoso, que es el «tras el módulo» de
+        # ``loading.py:193``. No se completa aquí: ``aplicar`` corre dentro
+        # de ``lazy_model_operation``, que puede caer a mitad de la
+        # construcción de otro modelo (ver ``_setup_fields_on_prepared``).
+        mark_model_for_setup(modelo)
 
     apps.lazy_model_operation(aplicar, resolve_model_key(*destino))
 

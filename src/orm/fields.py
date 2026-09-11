@@ -77,6 +77,7 @@ from orm.registry import (IR_MODELS, UNACCENT_ENABLED,   # noqa: F401
 from tools.sql import (SQL, convert_column, create_column, drop_not_null,
                        pg_varchar, set_not_null, sql_order_by_type)
 
+from orm.model_classes import ensure_field_setup
 from orm.fields_binary import Binary, Image                    # noqa: F401
 from orm.fields_misc import Boolean, Json                      # noqa: F401
 from orm.fields_numeric import Float, Integer, Monetary        # noqa: F401
@@ -1410,6 +1411,12 @@ class FieldDescriptor(DeferredAttribute):
             # ``:1644-1645`` — acceso por la clase: devuelve el descriptor.
             return self
 
+        # El primer consumidor tras ``apps.ready`` dispara la fase de setup
+        # que la fuente corre desde su cargador (``ensure_field_setup``): sin
+        # ella un ``related=`` sobre un campo de Django no tiene ``compute``.
+        if ensure_field_setup.pending:
+            ensure_field_setup()
+
         field = self.field
         environment = get_environment()
 
@@ -1422,13 +1429,16 @@ class FieldDescriptor(DeferredAttribute):
                 instance._check_field_access(field, 'read')
 
         # ``:1653-1661`` — la rama de tamaño, y SÍ tiene receptor. Un recordset
-        # ES una instancia del modelo de Django: ``BaseModel._from_ids`` lo
-        # construye con ``object.__new__`` más la terna, así que ``instance``
-        # puede llevar N ids. La terna se lee del **almacén de la instancia** y
-        # no por atributo: una fila real de Django no la tiene, y sobre ella
-        # esta rama no aplica — ``None`` distingue los dos sujetos sin
-        # preguntar por el tipo.
-        own_ids = instance.__dict__.get('_ids')
+        # ES una instancia del modelo de Django, y desde TASK-API-0402 toda
+        # fila de :class:`~orm.models.BaseModel` lleva la terna: la instala
+        # ``_from_ids`` con N ids, y ``__init__``/``from_db`` con ``(pk,)``.
+        # La terna es una ranura de ``__slots__`` (``models.py:362`` de la
+        # fuente), así que NO vive en ``__dict__``: un ``__dict__.get('_ids')``
+        # devuelve ``None`` siempre y esta rama quedaría muerta — el control
+        # que no discrimina (H-API-1106). ``None`` sólo lo da una fila de
+        # ``django.db.models.Model`` fuera de ``BaseModel``, que es una fila y
+        # sobre la que la rama no aplica.
+        own_ids = getattr(instance, '_ids', None)
         if own_ids is not None and len(own_ids) != 1:
             if own_ids:
                 # ``:1656-1658`` — que ``ensure_one`` levante la excepción.
@@ -1831,6 +1841,18 @@ def _install_field_descriptor(field, cls):
        vez de con su valor.
     """
     current = cls.__dict__.get(field.attname)
+    # Re-invocable desde ``Field.setup``: un campo ``related=`` no tiene
+    # ``compute`` en ``contribute_to_class`` —se lo cuelga ``setup_related``
+    # (``:632``) en la fase de setup—, así que aquí recibía el descriptor
+    # base, que NO define ``__set__``: la asignación del cómputo caía al
+    # ``__dict__`` y la caché nunca se enteraba (medido en
+    # ``probe_plain_row_assignment_lands_in_cache.py``: ``_model_setitem``
+    # trazado, ``_field_write`` nunca). La fuente no distingue: allá el
+    # descriptor es el propio ``Field`` y ``compute`` llega antes del primer
+    # acceso. Aquí el equivalente es promoverlo cuando el setup lo declara.
+    if type(current) is FieldDescriptor and getattr(field, 'compute', None):
+        setattr(cls, field.attname, ComputedFieldDescriptor(field))
+        return
     if current is not None and type(current) is not DeferredAttribute:
         return
     descriptor = (ComputedFieldDescriptor if getattr(field, 'compute', None)
@@ -3373,6 +3395,42 @@ def _field_setup_nonrelated(self, model):
 models.Field.setup_nonrelated = _field_setup_nonrelated
 
 
+def _first_record(corecord):
+    """El primer registro de un eslabón, o el eslabón vacío.
+
+    ≙ ``next(iter(corecord), corecord)`` de ``traverse_related`` (``:670``) y
+    ``_compute_related`` (``:692``): al atravesar una relación de varios se
+    toma el primero, y si no hay ninguno se conserva el contenedor vacío.
+
+    **Divergencia de mecanismo, medida:** allá ``record[name]`` sobre un
+    ``Many2one`` devuelve un recordset —iterable, de cero o un elemento—.
+    Aquí lo devuelve la ``ForeignKey`` de Django: la **fila** cuando hay una,
+    ``None`` cuando la columna es ``NULL``. Una fila corriente de Django no es
+    iterable (``TypeError`` en ``iter``), y un ``None`` tampoco; en los dos
+    casos el eslabón YA es «el primero o el vacío», que es lo que la fuente
+    obtiene con el ``next``. Un recordset nuestro (``orm.models.BaseModel``)
+    sí itera, y para él el ``next`` es el de la fuente.
+    """
+    try:
+        return next(iter(corecord), corecord)
+    except TypeError:
+        return corecord
+
+
+def _end_of_chain(value, related_field):
+    """Lee el último campo de la cadena sobre el eslabón final.
+
+    ≙ ``value[self.related_field.name]`` (``:696``). Allá un eslabón vacío es
+    un recordset vacío y leerle un campo devuelve el valor falso del campo
+    (``Field.falsy_value``). Aquí el eslabón vacío es ``None`` —lo que la FK
+    devuelve— y leerle con ``[]`` sería ``TypeError``: se traduce al mismo
+    valor falso que la fuente produce.
+    """
+    if value is None:
+        return getattr(related_field, 'falsy_value', None)
+    return value[related_field.name]
+
+
 def _field_traverse_related(self, record):
     """≙ ``Field.traverse_related`` (``:666``) — «traverse the fields of the
     related field ``self`` except for the last one, and return it as a pair
@@ -3385,7 +3443,7 @@ def _field_traverse_related(self, record):
     """
     for name in self.related.split('.')[:-1]:
         corecord = record[name]
-        record = next(iter(corecord), corecord)
+        record = _first_record(corecord)
     return record, self.related_field
 
 
@@ -3422,12 +3480,13 @@ def _field_compute_related(self, records):
     lo que la deja funcionar, y invertirlo la anularía en silencio — el N+1
     no rompe nada, sólo cuesta.
     """
+    records = as_record_list(records)
     values = list(records)
     for name in self.related.split('.')[:-1]:
-        values = [next(iter(value := element[name]), value) for element in values]
+        values = [_first_record(element[name]) for element in values]
     for record, value in zip(records, values):
         record[self.name] = self._process_related(
-            value[self.related_field.name], get_environment())
+            _end_of_chain(value, self.related_field), get_environment())
 
 
 models.Field._compute_related = _field_compute_related
@@ -3636,6 +3695,13 @@ def _field_setup(self, model):
         self.setup_related(model)
     else:
         self.setup_nonrelated(model)
+    # ``setup_related`` acaba de declarar ``compute``
+    # (``odoo19c: odoo/orm/fields.py:632``, ``self.compute = self._compute_related``).
+    # En la fuente el campo ES su propio descriptor, así que ese ``compute``
+    # rige desde el instante en que se asigna; aquí el descriptor se eligió en
+    # ``contribute_to_class``, antes de que ``compute`` existiera, y se vuelve a
+    # elegir con el campo ya armado.
+    _install_field_descriptor(self, model)
     self._setup_done = True
 
 
@@ -4406,17 +4472,27 @@ def _update_cache(self, records, cache_value, dirty=False):
 
 
 def _invoke_compute_method(field, records):
-    """Llama al método que ``field.compute`` nombra, sobre cada fila.
+    """Despacha ``field.compute`` sobre cada fila — por :func:`determine`.
 
-    ≙ ``BaseModel._compute_field_value`` (``odoo19c: odoo/orm/models.py``) en
-    lo que este stack necesita. La fuente lo invoca sobre el *recordset*
-    entero y el método itera por dentro con ``for record in self``; aquí la
-    unidad es la instancia, así que el bucle vive de este lado y el método
-    recibe una fila. Es la misma adaptación de :func:`~orm.utils.record_ids`,
-    vista desde el otro lado.
+    ≙ ``BaseModel._compute_field_value`` (``odoo19c: odoo/orm/models.py:4953``),
+    cuyo cuerpo es ``determine(field.compute, self)``. El despacho va por
+    :func:`determine` y no por ``getattr`` porque ``compute`` tiene DOS formas
+    en la fuente y las dos llegan aquí: el **nombre** de un método del modelo
+    (``compute='_compute_total'``) y un **invocable** — ``setup_related``
+    instala ``self.compute = self._compute_related`` (``:632``), un método
+    ligado al campo. Medido antes de este cambio
+    (``scripts/workbench/fachadas-construyen-una-vez-*/``
+    ``probe_related_setup_phase_when_reachable.py``): con ``getattr`` la
+    lectura de un ``related=`` moría con ``TypeError: attribute name must be
+    string, not 'method'``.
+
+    La fuente lo invoca sobre el *recordset* entero y el método itera por
+    dentro con ``for record in self``; aquí la unidad es la instancia, así
+    que el bucle vive de este lado y el método recibe una fila. Es la misma
+    adaptación de :func:`~orm.utils.record_ids`, vista desde el otro lado.
     """
     for record in as_record_list(records):
-        getattr(record, field.compute)()
+        determine(field.compute, record)
 
 
 def recompute(self, records):
