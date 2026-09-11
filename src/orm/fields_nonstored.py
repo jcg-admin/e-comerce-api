@@ -564,7 +564,7 @@ def annotate_related(field, related, attrs):
     #: perdían en silencio ``readonly`` (645 declaraciones en la referencia),
     #: ``inverse`` (35), ``recursive`` (3) y ``compute_sudo`` (1) — el default
     #: de clase (``orm/fields.py:1915-1945``) devolvía justo el valor que el
-    #: autor quiso cambiar. Ver :ref:`h-api-1101`.
+    #: autor quiso cambiar. Ver :ref:`h-api-1103`.
     #:
     #: Lo que SÍ se conserva de aquel razonamiento es su restricción, no su
     #: filtro: un campo que no declara nada no gana un atributo de instancia

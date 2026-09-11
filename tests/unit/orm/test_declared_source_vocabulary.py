@@ -1,6 +1,6 @@
 """Lo que el autor declara aterriza en el campo — también sin ``compute=``.
 
-Mitad ROJA del hueco 1 de :ref:`h-api-1101`. ``_declared_source_vocabulary``
+Mitad ROJA del hueco 1 de :ref:`h-api-1103`. ``_declared_source_vocabulary``
 (``orm/fields_nonstored.py:340-354``) **saca** de ``kwargs`` el vocabulario de
 la fuente y ``apply_source_defaults`` lo deja en ``attrs``; pero
 ``annotate_related:558`` sale temprano cuando la declaración no trae

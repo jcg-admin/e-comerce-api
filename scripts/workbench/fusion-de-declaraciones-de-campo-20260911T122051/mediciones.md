@@ -888,7 +888,7 @@ módulo. Cota inferior, no censo cerrado.
 
 Fecha: 2026-09-11T16:42:51
 
-El arreglo de :ref:`h-api-1101` tiene **dos mitades** y sólo una tenía
+El arreglo de :ref:`h-api-1103` tiene **dos mitades** y sólo una tenía
 anulación. La primera —retirar la salida temprana— ya se midió: 8 caen de 23.
 La segunda es el filtro que retiene lo no declarado, y ésta es su medición.
 
@@ -975,3 +975,36 @@ con el módulo de HEAD y con el del árbol.
 *Ciega a:* lo que un serializer declarado a mano haga con el campo — el eje
 medido es el mapeo automático de `ModelSerializer`, no un `Meta.fields` con
 override.
+
+## M16 — La etiqueta colisionó viva, y el renumerado es del más nuevo (2026-09-11T16:56:18)
+
+El `pre-push` de docs rechazó la publicación: `.. _h-api-1101:` estaba
+declarada **dos veces** sobre 1350 etiquetas del árbol. No es un defecto de
+este trabajo — es que el número se eligió sin medir el árbol, y otra
+iniciativa ya lo había tomado 39 minutos antes.
+
+| | iniciativa | `:fecha_creacion:` | commit |
+|---|---|---|---|
+| el otro | `adaptar-familias-odoo-monolito-modular` | 15:48:18 | `docs@ae9f6ef64` |
+| el mío | `completar-raiz-orm` | 16:27:13 | `docs@75190294e` |
+
+Renumera el **más nuevo**, así que los dos míos ceden: H-API-1101 →
+**H-API-1103** y H-API-1102 → **H-API-1104**. El bloque libre se midió antes
+de tomarlo —el máximo del árbol excluyendo los míos era 1101— en vez de
+suponerlo.
+
+Lo que esto cuesta y por qué importa: un `:ref:` a una etiqueta duplicada
+**resuelve al equivocado en silencio**. Sphinx avisa con `duplicate label` en
+el build, que es opcional en este proyecto, así que sin el gate de push la
+cita habría apuntado a otro hallazgo sin que nadie lo notara.
+
+*Métrica:* unicidad de la **declaración** `^.. _h-api-NNNN:` sobre los
+`.rst` de `source/`, por `check-ids-duplicados.sh --solo-etiquetas`.
+*Ciega a:* que una cita apunte al ID equivocado sin que haya duplicado —
+eso es semántico y ningún patrón lo ve; y a las citas sin ancla de contexto,
+que el propio gate declara (ve 463 de 1639 apariciones de `#NNN`).
+
+Las tres citas del lado api —el comentario de `annotate_related`, la M14 de
+este banco y el docstring del archivo de test— se reapuntaron a
+`h-api-1103` en el mismo pase. El hallazgo sigue citando `api@a5966121`,
+que es el commit que lo resolvió y no cambia.
