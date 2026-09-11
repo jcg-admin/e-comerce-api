@@ -79,6 +79,7 @@ from orm.fields_nonstored import (
     projection_or_none,
 )
 from orm.identifiers import NewId
+from orm.registry import IR_MODELS, name_of
 from orm.utils import display_name_of, model_of, record_ids
 from tools.misc import SENTINEL, unique
 from tools.sql import SQL
@@ -537,6 +538,110 @@ def _comodel_label(to):
     return to._meta.label
 
 
+
+#: ≙ ``OnDelete`` (``odoo19c: odoo/orm/fields_relational.py:28``) — los tres
+#: valores que la fuente admite, y su política en el vocabulario del stack.
+#:
+#: ``'restrict'`` va a ``models.RESTRICT`` y no a ``models.PROTECT``, y la
+#: diferencia no es de estilo: ``RESTRICT`` emite el ``ON DELETE RESTRICT`` de
+#: SQL —que es literalmente lo que la palabra de la fuente nombra— mientras que
+#: ``PROTECT`` es una guarda de Django en el plano de Python. La fuente vive en
+#: el catálogo de PostgreSQL (``:318`` compone su ``ON DELETE`` con este mismo
+#: valor), así que la contraparte fiel es la del motor.
+ON_DELETE_POLICY = {
+    'cascade': models.CASCADE,
+    'set null': models.SET_NULL,
+    'restrict': models.RESTRICT,
+}
+
+
+def _apply_ondelete(args, kwargs):
+    """Resuelve el ``ondelete`` de la fuente: su politica Y su atributo.
+
+    ≙ ``Many2one.setup_nonrelated`` (``odoo19c: :268-295``), con sus tres casos
+    portados verbatim:
+
+    1. sin ``ondelete`` declarado → ``'restrict' if required else 'set null'``
+       (``:282``);
+    2. ``'set null'`` sobre un campo requerido → ``ValueError`` (``:283-288``);
+    3. ``'restrict'`` hacia un modelo de :data:`~orm.fields.IR_MODELS` →
+       ``ValueError`` (``:289-294``).
+
+    **El MOMENTO diverge, y la divergencia es del stack.** La fuente resuelve en
+    ``setup_nonrelated``, una fase de preparación que Django no tiene; su
+    ``ForeignKey.__init__`` exige ``on_delete`` posicional, así que aquí la
+    resolución ocurre al construir el campo. La política es la misma; lo que
+    cambia es cuándo se aplica.
+
+    **La rama de ``is_transient()`` NO se simula.** La fuente la consulta en
+    ``:275`` —``if model.is_transient() and not comodel.is_transient()``— y
+    necesita el MODELO, que en ``__init__`` todavía no existe: el campo aún no
+    se ha asociado a ninguna clase. Un ``Many2one`` declarado en un modelo
+    transitorio recibe por tanto el default de la rama no transitoria. Queda
+    declarado aquí en vez de inventado, y su cierre es TASK-API-0405.
+
+    Sin ``ondelete`` en ``kwargs`` la función es transparente: los 1868
+    ``on_delete=`` del árbol pasan intactos.
+    """
+    required = not kwargs.get('null', False)
+    if 'ondelete' not in kwargs:
+        # La fuente resuelve la politica para TODO Many2one en
+        # `setup_nonrelated` (`:274-282`), lo declare quien lo declare, y la
+        # usa para componer el `ON DELETE` de la FK (`:306`). Asi que el
+        # default se aplica tambien aqui — no solo el atributo.
+        declared = 'restrict' if required else 'set null'
+        if 'on_delete' in kwargs or (len(args) > 1
+                                     and not isinstance(args[1], str)):
+            # El llamador ya trajo la politica en el vocabulario del stack: son
+            # las 1868 declaraciones que el arbol ya tiene, y el segundo
+            # posicional de `ForeignKey` es ese mismo `on_delete`. No se pisa;
+            # lo que se resuelve es el ATRIBUTO, que allá tambien existiria.
+            return args, kwargs, declared
+        kwargs['on_delete'] = ON_DELETE_POLICY[declared]
+        return args, kwargs, declared
+
+    declared = kwargs.pop('ondelete')
+    if not declared:
+        #: ``:282`` — la rama no transitoria, que es la que este momento alcanza.
+        declared = 'restrict' if required else 'set null'
+
+    if declared == 'set null' and required:
+        raise ValueError(
+            "The m2o field %s of model %s is required but declares its ondelete "
+            "policy as being 'set null'. Only 'restrict' and 'cascade' make "
+            "sense." % (kwargs.get('name', '<sin nombre>'),
+                        _comodel_label(args[0]) if args else '<sin comodelo>')
+        )
+
+    #: ``:289`` verbatim — la fuente compara la CADENA declarada contra
+    #: :data:`~orm.registry.IR_MODELS`, sin resolver el modelo: ``comodel_name``
+    #: allá es siempre el ``_name`` punteado, porque es el único vocabulario que
+    #: existe. Aquí el destino llega como esa misma cadena o como la clase ya
+    #: cargada, así que la clase se reduce a su ``_name`` con
+    #: :func:`~orm.registry.name_of`, que lee ``__dict__['_name']`` — un solo
+    #: vocabulario, como la fuente.
+    comodel = args[0] if args else None
+    if comodel is None or isinstance(comodel, str):
+        comodel_name = comodel
+    else:
+        comodel_name = name_of(comodel)
+    if declared == 'restrict' and comodel_name in IR_MODELS:
+        raise ValueError(
+            f"Field is defined as ondelete='restrict' while having "
+            f"{comodel_name} as comodel, the 'restrict' mode is not supported "
+            f"for this type of field as comodel."
+        )
+
+    try:
+        kwargs['on_delete'] = ON_DELETE_POLICY[declared]
+    except KeyError:
+        raise ValueError(
+            f"ondelete={declared!r} no es uno de los tres valores que la "
+            f"fuente admite: {sorted(ON_DELETE_POLICY)}"
+        ) from None
+    return args, kwargs, declared
+
+
 def Many2one(*args, store=_UNSET, company_dependent=False,
              check_company=False, related=None, **kwargs):
     """``fields.Many2one`` — ≙ el de la referencia: con columna, sin ella o por empresa.
@@ -609,11 +714,21 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
             CompanyDependent(*resto, base_type='many2one',
                              comodel=_comodel_label(to), **kwargs),
             check_company)
+    args, kwargs, resolved_ondelete = _apply_ondelete(args, kwargs)
     if store:
         field = _mark_check_company(models.ForeignKey(*args, **kwargs),
                                     check_company)
     else:
         field = _mark_check_company(NonStored(*args, **kwargs), check_company)
+    # El atributo SOBREVIVE a la construccion, y no es cosmetico: la fuente lo
+    # LEE desde cuatro sitios ademas de la FK — `ir.model.fields` lo refleja a
+    # su columna `on_delete` (`odoo19c: ir_model.py:1164`), `_check_inherits`
+    # exige `cascade` en un campo `delegate` (`model_classes.py:465`), un
+    # One2many consulta el de su inverso (`fields_relational.py:987`), y la
+    # suite del ORM afirma sobre el directamente
+    # (`test_orm/tests/test_fields.py:4230-4256`, cuatro casos). Un porte que
+    # solo tradujera el kwarg dejaria ciegos a los cuatro.
+    field.ondelete = resolved_ondelete
     return annotate_related(field, related, related_attrs)
 
 

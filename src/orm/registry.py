@@ -231,6 +231,32 @@ def reset_invalidation_record():
 #: lookup ``SqlILike`` y el predicado en memoria— decidan lo mismo.
 UNACCENT_ENABLED = True
 
+#: Los siete modelos del registro que un ``Many2one`` NO puede proteger.
+#:
+#: ≙ ``IR_MODELS`` (``odoo19c: odoo/orm/fields.py:37``). Su unico consumidor
+#: alla es ``fields_relational.py:289``:
+#: ``if self.ondelete == 'restrict' and self.comodel_name in IR_MODELS``, que
+#: degrada esa politica a ``'cascade'``. La razon es que el propio registro se
+#: desmonta al desinstalar un modulo, y una FK que lo proteja convierte esa
+#: operacion en un error.
+#:
+#: **Vive aqui y no en ``orm/fields.py``, que es donde la fuente lo declara.**
+#: Es la misma divergencia de SITIO que :data:`UNACCENT_ENABLED`, por la misma
+#: causa medida: nuestro ``orm/fields.py`` es a la vez el nucleo de
+#: :class:`Field` **y** una fachada que re-exporta diez modulos hermanos, entre
+#: ellos ``orm.fields_relational`` (``fields.py:92``). La fuente no tiene esa
+#: arista —su ``odoo/orm/fields.py`` no importa ``fields_relational``— asi que
+#: alla la constante y su consumidor conviven sin ciclo. Aqui importarla desde
+#: ``fields_relational`` cierra un 2-ciclo ``fields <-> fields_relational``.
+#:
+#: El registro es quien nombra a sus propios modelos, asi que este es su hogar
+#: natural. ``orm/fields.py`` la re-exporta para que la superficie publica siga
+#: siendo la de la fuente.
+IR_MODELS = (
+    'ir.model', 'ir.model.data', 'ir.model.fields', 'ir.model.fields.selection',
+    'ir.model.relation', 'ir.model.constraint', 'ir.module.module',
+)
+
 
 def _unaccent(x):
     """Envuelve ``x`` en la llamada SQL ``unaccent(...)``, repartiendo por tipo.

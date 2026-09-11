@@ -70,7 +70,8 @@ from tools.constants import PREFETCH_MAX
 from tools.misc import SENTINEL, OrderedSet, remove_accents, unique
 from tools.translate import _
 from orm import registry as orm_registry
-from orm.registry import (UNACCENT_ENABLED, Registry,
+from orm.registry import (IR_MODELS, UNACCENT_ENABLED,   # noqa: F401
+                          Registry,
                           field_computed as registry_field_computed,
                          field_depends_context, is_not_null)
 from tools.sql import (SQL, convert_column, create_column, drop_not_null,
@@ -1610,14 +1611,11 @@ T = TypeVar('T')
 #: ≙ ``IR_MODELS`` (``:37``) — los siete modelos del registro que un
 #: ``Many2one`` NO puede proteger con ``on_delete=PROTECT``.
 #:
-#: Su consumidor en la fuente es ``fields_relational.py:289``:
-#: ``if self.ondelete == 'restrict' and self.comodel_name in IR_MODELS``. La
-#: razón es que el propio registro se desmonta al desinstalar un módulo, y una
-#: FK que lo proteja convierte esa operación en un error.
-IR_MODELS = (
-    'ir.model', 'ir.model.data', 'ir.model.fields', 'ir.model.fields.selection',
-    'ir.model.relation', 'ir.model.constraint', 'ir.module.module',
-)
+#: Re-exportado de :data:`orm.registry.IR_MODELS`, donde vive. La fuente lo
+#: declara aquí y lo consume desde ``fields_relational.py:289``; aquí esa
+#: arista cerraría un 2-ciclo, porque este módulo es además la fachada que
+#: re-exporta ``orm.fields_relational`` (``:92``) y la fuente no tiene esa
+#: arista. Mismo traslado y misma causa que :data:`UNACCENT_ENABLED`.
 
 #: ≙ ``PYTHON_INEQUALITY_OPERATOR`` (``:45``) — la comparación **en memoria**.
 #:
