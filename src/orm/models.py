@@ -3951,7 +3951,7 @@ class RecordCache(collections.abc.Mapping):
         return sum(1 for name in self)
 
 
-class BaseModel(Model):
+class BaseModel(DefaultGetMixin, Model):
     """El recordset — ≙ ``BaseModel`` (``odoo19c: odoo/orm/models.py:334-7004``).
 
     Docstring de la fuente, verbatim en lo que gobierna: *"Every model instance

@@ -60,6 +60,7 @@ from typing import TypeVar
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist
 from django.db import DEFAULT_DB_ALIAS, connections, models
+from django.db.models.fields.related import RelatedField
 from django.db.models.query_utils import DeferredAttribute
 from django.utils.timezone import localtime
 from psycopg.types.json import Jsonb
@@ -1861,6 +1862,66 @@ def _install_field_descriptor(field, cls):
 
 
 models.Field.contribute_to_class = _field_contribute_to_class
+
+
+# ---------------------------------------------------------------------------
+# La compuerta relacional de ``store`` — ≙ ``if self.store:`` en
+# ``odoo19c: odoo/orm/fields_relational.py:1279`` (``Many2many.setup_nonrelated``
+# crea la tabla de relación SÓLO si el campo está almacenado; ``:1517`` y
+# ``:1554`` la tocan al escribir sólo bajo la misma guarda). La fuente no tiene
+# accessor inverso: un relacional sin ``store`` es un campo calculado que
+# devuelve registros del comodelo y nada más.
+#
+# En Django el mismo contenido se construye con dos piezas que el stack ya
+# trae —«con qué construirlo», sin dependencia de fuera—:
+#
+# 1. ``remote_field.related_name = '+'`` — la relación queda ``hidden``
+#    (``related.py:hidden``), y ``contribute_to_related_class`` no instala
+#    accessor ni nombre de consulta inversa en el comodelo.
+# 2. Para ``ManyToManyField``, enrutar al ``contribute_to_class`` de
+#    ``RelatedField`` (el abuelo): ``ManyToManyField.contribute_to_class``
+#    crea la tabla intermedia y el ``ManyToManyDescriptor`` DESPUÉS de
+#    ``super()`` (``related.py:1961-2008``), así que nuestro parche sobre
+#    ``Field`` no alcanza a impedirlo — hay que decidir antes de entrar.
+#
+# ``store`` se deriva ANTES con ``_setup_attrs__`` (idempotente: vuelve a
+# correr dentro de ``_field_contribute_to_class`` con el mismo resultado),
+# porque el orden de la MRO obliga a conocerlo antes de que Django lea
+# ``related_name``.
+# ---------------------------------------------------------------------------
+_DJANGO_RELATED_CONTRIBUTE = RelatedField.contribute_to_class
+_DJANGO_M2M_CONTRIBUTE = models.ManyToManyField.contribute_to_class
+
+
+def _hidden_reverse_name(cls, name):
+    """El nombre oculto que el propio stack genera para un ``related_name='+'``
+    de M2M (``related.py:1977-1981``): distingue dos relacionales ocultos del
+    mismo modelo sin exponer ninguno."""
+    return '_%s_%s_%s_+' % (cls._meta.app_label, cls.__name__.lower(), name)
+
+
+def _related_contribute_to_class(self, cls, name, private_only=False, **kwargs):
+    """``RelatedField.contribute_to_class`` con la compuerta de ``store``."""
+    self._setup_attrs__(cls, name)
+    if self.store is False and not cls._meta.abstract:
+        self.remote_field.related_name = '+'
+    _DJANGO_RELATED_CONTRIBUTE(
+        self, cls, name, private_only=private_only, **kwargs)
+
+
+def _m2m_contribute_to_class(self, cls, name, **kwargs):
+    """``ManyToManyField.contribute_to_class`` con la compuerta de ``store``:
+    sin ``store`` no nace la tabla de relación ni el descriptor de M2M."""
+    self._setup_attrs__(cls, name)
+    if self.store is False and not cls._meta.abstract:
+        self.remote_field.related_name = _hidden_reverse_name(cls, name)
+        _DJANGO_RELATED_CONTRIBUTE(self, cls, name, **kwargs)
+        return
+    _DJANGO_M2M_CONTRIBUTE(self, cls, name, **kwargs)
+
+
+RelatedField.contribute_to_class = _related_contribute_to_class
+models.ManyToManyField.contribute_to_class = _m2m_contribute_to_class
 
 
 # === Los seis del censo de ``odoo/orm/fields.py`` (tarea #209) ==============
