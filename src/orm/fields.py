@@ -100,6 +100,14 @@ from orm.utils import (COLLECTION_TYPES, as_record_list, browse, expand_ids,
                        model_field_registry, model_of, model_of_field,
                        record_ids)
 
+#: La clave del almacén de la instancia donde se anotan los campos escritos
+#: cuyo inverso todavía no se ha despachado. Vive en ``__dict__`` y no en una
+#: ranura porque es lo que ya hace ``_orm_building`` en este mismo descriptor;
+#: la escribe :meth:`ComputedFieldDescriptor._mark_pending_inverse` y la
+#: **saca** —no la lee— :meth:`~orm.models.RecordLoaderMixin.save`, que es lo
+#: que impide que un segundo ``save()`` de la misma fila vuelva a despacharlo.
+PENDING_INVERSE_FIELDS = '_pending_inverse_fields'
+
 #: El **registro de tipos de campo**, no la lista de exportables del módulo.
 #:
 #: ``base.models.ir_model`` lo consume literalmente: deriva ``FIELD_TYPES`` de
@@ -1632,6 +1640,31 @@ class ComputedFieldDescriptor(FieldDescriptor):
     3.24× es despreciable frente a la llamada al método de cómputo.
     """
 
+    def _mark_pending_inverse(self, instance):
+        """Anota que este campo quedó escrito y su inverso no se ha despachado.
+
+        **Es la segunda mitad de la divergencia que el docstring de**
+        :meth:`__set__` **ya declara**, no una razón nueva. La fuente manda la
+        fila persistida a ``records.write({name: value})`` (``:1841``), y su
+        ``write`` despacha el inverso al final del mismo cuerpo —
+        ``fields[0].determine_inverse(real_recs)``
+        (``odoo19c: odoo/orm/models.py:4493``)—. Aquí la asignación **no**
+        entra en ``write`` —emitiría un UPDATE donde la de Django no emite
+        ninguno—, así que el despacho se queda sin sitio: se anota al asignar
+        y lo recoge :meth:`~orm.models.RecordLoaderMixin.save`, que es el
+        momento en que la fila llega a la base.
+
+        No se anota en los otros dos cubos, y el motivo lo da la fuente:
+        ``is_protected`` es *"records being computed: no business logic, no
+        recomputation"* (``:1822``) y ``_orm_building`` es la carga de caché.
+        Un inverso ES lógica de negocio.
+        """
+        field = self.field
+        if not getattr(field, 'inverse', None):
+            return
+        instance.__dict__.setdefault(PENDING_INVERSE_FIELDS, set()).add(
+            field.name)
+
     def __set__(self, instance, value):
         """≙ ``Field.__set__`` (``:1807-1841``) — el reparto en tres cubos.
 
@@ -1680,6 +1713,19 @@ class ComputedFieldDescriptor(FieldDescriptor):
                 field._insert_cache(
                     instance,
                     [field.convert_to_cache(value, instance, validate=False)])
+            if not getattr(field, 'concrete', True):
+                # **Un campo SIN COLUMNA no puede venir de la fila.** El
+                # cargador de Django puebla por ``opts.concrete_fields``, así
+                # que un campo sin columna sólo llega hasta aquí por el bucle
+                # de sobrantes de ``Model.__init__`` — es decir, porque quien
+                # construyó lo pasó como argumento. Ése es exactamente el
+                # ``vals`` del que la fuente saca sus ``determine_inverses`` en
+                # ``create`` (``odoo19c: odoo/orm/models.py:4682``), y por eso
+                # la marca sí corresponde: el tramo sigue sin ser una
+                # escritura —ni ``modified()``, ni marca de sucio— pero el
+                # inverso que ``create`` despacha (``:4717-4733``) necesita
+                # saber qué campos trajo el llamador.
+                self._mark_pending_inverse(instance)
             return
 
         environment = get_environment()
@@ -1714,11 +1760,13 @@ class ComputedFieldDescriptor(FieldDescriptor):
                 parent = getattr(instance, field.related.split('.')[0], None)
                 if parent is not None and not parent.pk:
                     setattr(parent, field.name, value)
+            self._mark_pending_inverse(instance)
             return
 
         # ``:1838-1841`` — fila real. Ver la divergencia del docstring.
         field.write(instance, field.convert_to_write(value, instance))
         instance.modified([field.name])
+        self._mark_pending_inverse(instance)
 
 
 def _collect_field_definitions(field, cls, name):
@@ -4093,7 +4141,20 @@ def get_depends(self, model):
                         f'{model.__name__}.{self.name}: la ruta related '
                         f'{self.related!r} atraviesa un campo que no lleva a '
                         f'ningun modelo')
-                field = model_field_registry(field_model)[field_name]
+                registry_of_model = model_field_registry(field_model)
+                if field_name not in registry_of_model:
+                    # **El eslabón ausente se NOMBRA.** Antes salía como un
+                    # ``KeyError`` pelado con sólo el segmento —diez mil veces
+                    # ``KeyError: 'company_id'``— y no decía ni qué campo
+                    # declara la cadena ni sobre qué modelo se rompió. La
+                    # fuente no necesita el mensaje porque su ``_fields``
+                    # siempre tiene el nombre; aquí la cadena viaja portada
+                    # verbatim y el eslabón puede faltar de verdad.
+                    raise ValueError(
+                        f'{model.__name__}.{self.name}: la ruta related '
+                        f'{self.related!r} pide {field_name!r} sobre '
+                        f'{field_model.__name__}, que no lo declara')
+                field = registry_of_model[field_name]
                 depends_context.extend(field.get_depends(field_model)[1])
                 field_model = _comodel_of(field, orm_registry)
             depends_context = tuple(unique(depends_context))

@@ -69,8 +69,28 @@ class ComputeDispatchProbe(models.Model):
     label = fields.Char(compute='_compute_label')
     #: El mismo campo sin cómputo — el control del control.
     plain_label = fields.Char(store=False, default='del default')
+    #: El titular de la cadena. **La sonda lo declara desde TASK-API-0412**:
+    #: antes la cadena de abajo apuntaba a un campo que este modelo no tenía, y
+    #: eso no fallaba sólo porque ``ensure_field_setup()`` abortaba antes de
+    #: llegar —en ``company_country_code``, la tarea #353—. Cerrada aquella
+    #: costura, el recorrido alcanza esta cadena y la rompe en el import, que
+    #: es a la vez el arranque de toda la suite.
+    company = fields.Many2one(
+        'base.ResCompany', on_delete=models.DO_NOTHING, null=True,
+        related_name='+')
     #: La precedencia: con ``related`` la cadena manda aunque haya ``compute``.
-    company_label = fields.Char(related='company_id.name',
+    #: El primer eslabón va deletreado como la fuente —``company_id``, que aquí
+    #: es el **attname** del campo de arriba—, que es justo lo que
+    #: ``model_field_registry`` tuvo que aprender a resolver.
+    #:
+    #: El segundo eslabón es ``code`` y no ``name``: ``ResCompany.name`` sigue
+    #: siendo un ``@property`` —la referencia lo declara
+    #: ``related='partner_id.name'`` (``odoo19c: res_company.py:48``)— y un
+    #: ``@property`` no vive en ``_meta``, así que ninguna cadena puede
+    #: navegarlo. Es el mismo defecto que TASK-API-0412 cerró para la dirección,
+    #: una capa más arriba; su sucesor es **TASK-GEN-0634**. La sonda mide la
+    #: precedencia, no el inventario de campos de ``ResCompany``.
+    company_label = fields.Char(related='company_id.code',
                                 compute='_compute_label')
 
     class Meta:

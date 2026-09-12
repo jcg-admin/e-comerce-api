@@ -420,8 +420,34 @@ def model_field_registry(model):
     Un solo cuerpo para los dos consumidores: duplicar la construccion seria la
     segunda fuente de verdad que ``calibration-verified-numbers.md`` prohibe, y
     aqui divergiria justo por el eje que ya fallo una vez.
+
+    **El mapa responde a los DOS nombres del campo: el suyo y su attname.**
+    En la fuente un ``Many2one`` se llama ``company_id`` y su ``_fields`` lo
+    guarda con ese nombre, asi que un ``related='company_id.currency_id'``
+    portado verbatim resuelve. Aqui la convencion del arbol deja caer el
+    sufijo —el campo se llama ``company``— y Django conserva ``company_id``
+    como **attname**: es el mismo campo, deletreado como Django deletrea su
+    atributo. Un mapa que solo respondiera al nombre obligaria a reescribir
+    los **285 de 295** ``related=`` del arbol que llevan el sufijo de la
+    fuente, que es justo lo que ``porte-completo-no-parcial.md`` no quiere:
+    la cadena se porta, no se traduce.
+
+    Medido antes de cerrarlo: con la costura de ``ResCompany.country`` ya
+    cerrada, ``ensure_field_setup()`` alcanzaba el siguiente eslabon y la suite
+    entera moria con ``KeyError: 'company_id'`` — **10 597** errores
+    (``scripts/evidence/suite-0412-2026-09-12T08-54-35-001.log``). Es la tarea
+    **#353**.
     """
-    registry = {field.name: field for field in model._meta.get_fields()}
+    fields = list(model._meta.get_fields())
+    # **El attname va PRIMERO y el nombre lo pisa**, y no es defensa ociosa: si
+    # algún día un modelo declarara un campo llamado ``company_id`` junto a un
+    # ``company`` cuyo attname es ``company_id``, el nombre explícito tiene que
+    # ganar. Medido hoy sobre el árbol entero: **895** attnames distintos del
+    # nombre y **0** choques
+    # (``scripts/evidence/censo-attname-2026-09-12T*-001.log``).
+    registry = {field.attname: field for field in fields
+                if getattr(field, 'attname', None)}
+    registry.update({field.name: field for field in fields})
     registry.update(non_stored_fields(model))
     return registry
 

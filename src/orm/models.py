@@ -84,7 +84,8 @@ from orm.environments import (
 from orm.commands import ManyToManyLink, ManyToManySet, One2manyChild
 from orm import registry
 from orm.domains import Domain, to_q
-from orm.fields import FieldDescriptor, convert_to_display_name, determine_inverse
+from orm.fields import (PENDING_INVERSE_FIELDS, FieldDescriptor,
+                        convert_to_display_name, determine_inverse)
 from orm.fields_textual import Char
 from orm.identifiers import NewId
 from orm.fields_nonstored import NonStored, non_stored_fields
@@ -2426,17 +2427,138 @@ class RecordLoaderMixin(FieldSqlMixin):
         if not values:
             return self
         determine_inverses = self._group_written_inverses(values)
+        self._warm_x2many_before_inverse(determine_inverses)
+        protected = self._protected_while_writing(values)
+        to_compute = [field.name for field in protected
+                      if getattr(field, 'compute', None) and field.name not in values]
+        if to_compute:
+            # ``:4433-4437`` — fuerza el cálculo de los campos que se computan
+            # junto a los asignados pero que nadie asignó: dentro del alcance
+            # de protección ya no se computarían.
+            self._recompute_recordset(to_compute)
         values, relational = self._load_records_split_relational(values)
         values = self._load_records_coerce_vals(values)
-        if values:
-            for fname, value in values.items():
-                setattr(self, fname, value)
-            self.save(update_fields=list(values))
-        if relational:
-            self._load_records_apply_relational(relational)
+        with env().protecting(protected, self):
+            if values:
+                for fname, value in values.items():
+                    setattr(self, fname, value)
+                # ``update_fields`` sólo admite lo que Django sabe escribir:
+                # su propio ``Model.save`` valida contra este conjunto y lanza
+                # *"The following fields do not exist in this model, are m2m
+                # fields, primary keys, or are non-concrete fields"* ante
+                # cualquier otro nombre. Un campo sin columna llega aquí por
+                # ``_load_records_split_relational``, que reparte por TIPO DE
+                # VALOR y no por tipo de campo, así que un ``Many2one`` sin
+                # columna aterriza en ``values``. Se filtra con el mismo
+                # conjunto que Django valida —no con una copia— para que no
+                # haya dos fuentes de verdad.
+                writable = self._meta._non_pk_concrete_field_names
+                self.save(update_fields=[fname for fname in values
+                                         if fname in writable])
+            if relational:
+                self._load_records_apply_relational(relational)
+            # ``:4493`` — el inverso se despacha DENTRO del alcance de
+            # protección, una vez por grupo.
+            for fields in determine_inverses.values():
+                fields[0].determine_inverse(self)
+        return self
+
+    def _warm_x2many_before_inverse(self, determine_inverses):
+        """Deja en caché el valor actual de un x2many antes de escribirlo.
+
+        ≙ ``:4408-4416``, con su razón verbatim: *"The written value is a list
+        of commands that must applied on the field's current value. Because the
+        field is protected while being written, the field's current value will
+        not be computed and default to an empty recordset. So make sure the
+        field's value is in cache before writing, in order to avoid an
+        inconsistent update."*
+        """
+        for fields in determine_inverses.values():
+            for field in fields:
+                if getattr(field, 'type', None) in ('one2many', 'many2many'):
+                    getattr(self, field.name, None)
+
+    def _protected_while_writing(self, values):
+        """Los campos que no deben recomputarse mientras se escriben.
+
+        ≙ ``protected`` (``odoo19c: odoo/orm/models.py:4401,4419-4430``), con
+        su condición verbatim —``field.inverse or (field.compute and not
+        field.readonly)``, acotada por ``field.store or field.type not in
+        ('one2many', 'many2many')``— y su comentario: *"Protect the field from
+        being recomputed while being inversed."*
+
+        **Sin esto el inverso se despacharía dos veces**, y no por un defecto
+        de la fuente sino por una divergencia nuestra: allá ``write`` asigna
+        con ``field.write(self, value)`` (``:4470``) y aquí con ``setattr``,
+        que entra en :meth:`~orm.fields.ComputedFieldDescriptor.__set__`. Con
+        la fila ya persistida ese descriptor cae en el cubo de fila real y
+        anota el inverso como pendiente; el ``save()`` de la línea siguiente lo
+        despacharía, y el bucle explícito del final lo repetiría. Dentro de
+        este alcance el descriptor cae en ``is_protected`` —*"no business
+        logic"*— y no anota nada, así que el único despacho es el explícito.
+        """
+        fields_of = model_field_registry(type(self))
+        protected = set()
+        for fname in values:
+            field = fields_of.get(fname)
+            if field is None:
+                continue
+            if not (getattr(field, 'inverse', None)
+                    or (getattr(field, 'compute', None)
+                        and not getattr(field, 'readonly', False))):
+                continue
+            if (getattr(field, 'store', False)
+                    or getattr(field, 'type', None)
+                    not in ('one2many', 'many2many')):
+                protected.update(
+                    registry.field_computed[field]
+                    if field in registry.field_computed else [field])
+        return protected
+
+    def save(self, *args, **kwargs):
+        """Persiste la fila y despacha el inverso que quedó anotado.
+
+        ≙ la mitad de ``write`` que despacha el inverso
+        (``odoo19c: odoo/orm/models.py:4491-4493``), traída al único momento
+        en que este stack puede ejecutarla: **después** de que la fila llegue
+        a la base.
+
+        Por qué no vive en ``write``
+        ============================
+
+        Porque la asignación directa —``company.country = mx``— nunca pasa por
+        ``write``. Allá sí: ``Field.__set__`` manda la fila persistida a
+        ``records.write({name: value})`` (``:1841``), así que toda escritura
+        desemboca en el mismo cuerpo. Aquí el descriptor **no** puede hacerlo
+        —``write`` llama a ``save()`` y emitiría un UPDATE donde la asignación
+        de Django no emite ninguno (divergencia ya declarada en
+        ``ComputedFieldDescriptor.__set__``)—, de modo que anota el campo y el
+        despacho aterriza aquí.
+
+        El conjunto se **saca** antes de despachar, no después: ``ResCompany``
+        llama a ``super().save(update_fields=['parent_path'])`` una segunda vez
+        para materializar su ruta, y sin el retiro previo ese segundo paso
+        volvería a invertir lo mismo.
+
+        Divergencia de alcance declarada: ``bulk_create`` y ``QuerySet.update``
+        no pasan por aquí y por tanto no despachan inversos — como tampoco lo
+        hace el ``super().write()`` de la fuente, que existe justo para saltarse
+        esa mitad. Y ``BaseModel`` no hereda este mixin (``BaseModel`` extiende
+        ``DefaultGetMixin``, no ``RecordLoaderMixin``), así que un modelo
+        construido sobre él no recoge la anotación: es la tarea **#318**.
+        """
+        super().save(*args, **kwargs)
+        pending = self.__dict__.pop(PENDING_INVERSE_FIELDS, None)
+        if not pending:
+            return
+        fields_of = model_field_registry(type(self))
+        determine_inverses = collections.defaultdict(list)
+        for fname in sorted(pending):
+            field = fields_of.get(fname)
+            if field is not None and getattr(field, 'inverse', None):
+                determine_inverses[field.inverse].append(field)
         for fields in determine_inverses.values():
             fields[0].determine_inverse(self)
-        return self
 
     def _group_written_inverses(self, values):
         """Los campos escritos que declaran inverso, agrupados POR METODO.
