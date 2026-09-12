@@ -567,6 +567,23 @@ class ResCompany(TimeStampedModel):
         ``company.update(...)`` —que allá escribe sobre el recordset— es aquí
         el ``setattr`` por nombre. La elevación la aporta el alcance de
         ``orm.environments.sudo``, no un recordset elevado.
+
+        **Sin partner no computa, y eso es FIEL, no un recorte.** La fuente
+        abre con ``for company in self.filtered(lambda company: company.partner_id)``
+        (``:138``): una compañía sin partner sale del bucle y su dirección
+        queda sin tocar. El ``return`` temprano de aquí es esa misma conducta
+        sobre una fila.
+
+        **Dos guardas que la fuente NO tiene, declaradas:**
+
+        - ``address_data.get('contact')`` contra su ``if address_data['contact']``
+          (``:140``). La fuente confía en que la clave exista; aquí un
+          ``address_get`` que no la devuelva da ``None`` en vez de ``KeyError``.
+        - ``if source is None: return``. La fuente hace ``browse(id)``, que
+          nunca devuelve ``None`` — un id inexistente allá revienta con
+          ``MissingError`` al leerlo. Aquí un ``contact`` colgado apuntando a
+          una fila borrada deja la dirección sin computar **en silencio**, que
+          es menos ruidoso que la fuente. Su sucesor es **TASK-GEN-0633**.
         """
         partner = self.partner if self.partner_id else None
         if partner is None:
@@ -620,6 +637,14 @@ class ResCompany(TimeStampedModel):
         campo de dirección debe disparar ``ResPartner.save`` completo, que es
         quien propaga la dirección a los hijos (``_fields_sync``). Acotar los
         campos saltaría esa propagación, que la fuente sí produce.
+
+        **El ``return`` sin partner es FIEL — medido, no supuesto.** La fuente
+        escribe ``company.partner_id.street = company.street`` (``:145``) sin
+        guarda: sobre un ``partner_id`` vacío eso llega a ``Field.__set__``
+        (``odoo19c: odoo/orm/fields.py:1807-1841``), que reparte ``records._ids``
+        en tres cubos y, con la tupla vacía, no entra en ninguno — **no-op
+        silencioso**, no excepción. La guarda de aquí produce el mismo
+        desenlace de forma explícita.
         """
         partner = self.partner if self.partner_id else None
         if partner is None:
