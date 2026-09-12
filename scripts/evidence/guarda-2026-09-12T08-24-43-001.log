@@ -7,3 +7,4 @@ esperado que sobreviva: False | sobrevivio: False
 borrado del pais: EXC FieldError: Cannot update model field <django.db.models.fields.related.ForeignKey: country> (only concrete fields are permitted).
 marco del reventon: deletion.py:489 delete | query.py:1274 update | subqueries.py:96 add_update_values
 VEREDICTO la_politica_decide_el_reventon: OK
+EXIT=0

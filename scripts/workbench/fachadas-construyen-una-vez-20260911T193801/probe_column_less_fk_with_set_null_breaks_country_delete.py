@@ -1,16 +1,22 @@
-"""Sonda L de TASK-API-0417 — con la política que HEREDA hoy (SET_NULL), ¿borrar
-un país revienta?
+"""Sonda L de TASK-API-0417 — CONTROL DE ANULACIÓN: con la guarda retirada
+(``SET_NULL``), ¿borrar un país revienta?
 
-Par de control de :ref:`h-api-1110` y bloqueante de TASK-API-0412. La sonda K
-midió que el campo relacional sin columna que el arreglo va a declarar nace con
-política ``SET_NULL``, y que el recolector de ``delete()`` sólo salta
-``DO_NOTHING``. Una FK sin columna que el recolector SÍ recorre hace que el
-compilador arme un ``Col`` con ``column=None`` y reviente
-(``compiler.py:30 quote_name_unless_alias``).
+Par de control de :ref:`h-api-1110` y bloqueante de TASK-API-0412.
 
-Las dos sondas son el mismo cuerpo con una sola línea de diferencia: la política
-del campo. Discrimina por construcción — si las dos dieran el mismo resultado, la
-política no sería la causa y el arreglo propuesto no serviría.
+**Esta sonda cambió de papel al aterrizar TASK-API-0426, y el cambio es la
+evidencia.** Antes medía la política que el campo *heredaba*: ``_apply_ondelete``
+resolvía ``'set null'`` para todo ``null=True`` sin ``ondelete`` declarado, y el
+recolector de ``delete()`` sólo omite ``DO_NOTHING``. Corrida sin tocar una línea
+después del arreglo, reportó ``politica del campo: DO_NOTHING`` y ``sobrevivio:
+True`` — su veredicto viró a FALLA porque el fenómeno que afirmaba desapareció
+(``scripts/evidence/politica2-2026-09-12T08-23-35-001.log``, conservado).
+
+Ese viraje es lo que ``metrica-decide-la-conclusion.md`` (sub-patrón D) pide de
+un control: **tiene que poder fallar**. Así que la sonda pasa a medir el
+fenómeno con la guarda **anulada** a mano — se retira el ``DO_NOTHING`` que
+``fields_relational.py`` fuerza ahora para todo campo sin columna, y se comprueba
+que caen exactamente los borrados que dependen de ella. Un verde aquí con la
+guarda retirada diría que el arreglo no arregla nada.
 
 Se mide por contenido: se borra un país RECIÉN creado, con la compañía ya
 declarando el campo hacia él, y se reporta el reventón o su ausencia.
@@ -48,10 +54,14 @@ ResCompany._inverse_country = _inverse_country
 
 country_field = Many2one(ResCountry, compute='_compute_address',
                          inverse='_inverse_country', null=True)
-#: La política que el campo recibe HOY: ``_apply_ondelete`` (``fields_relational.py:571``)
-#: resuelve ``'set null'`` para un ``null=True`` sin ``ondelete`` declarado, y
-#: ``SET_NULL`` NO es la política que el recolector salta.
-
+#: LA ANULACIÓN: se retira la guarda que ``fields_relational.py`` acaba de
+#: instalar —``if not has_column: kwargs['on_delete'] = models.DO_NOTHING``— y se
+#: repone la política que el campo heredaría de ``_apply_ondelete``
+#: (``'set null'`` para todo ``null=True`` sin ``ondelete`` declarado). El
+#: recolector de ``delete()`` sólo omite ``DO_NOTHING``, así que con cualquier
+#: otra política recorre el campo y manda a emitir un ``UPDATE`` sobre una
+#: columna que no existe.
+country_field.remote_field.on_delete = models.SET_NULL
 country_field.contribute_to_class(ResCompany, 'country')
 mark_model_for_setup(ResCompany)
 setup_count = ensure_field_setup()
@@ -93,6 +103,7 @@ survives = delete_error is None
 expected = {
     'setup_ran':          setup_count > 0,
     'no_column':          getattr(country_field, 'column', 'sentinel') is None,
+    'the_guard_was_actually_nullified':   policy == 'SET_NULL',
     'delete_survives_matches_the_policy': survives is False,
 }
 for key, ok in expected.items():

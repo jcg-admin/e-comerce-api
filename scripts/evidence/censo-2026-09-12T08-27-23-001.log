@@ -17,3 +17,4 @@ campo nuevo -> comodelo: ResCountry | politica: DO_NOTHING | columna: None
 borrado del partner: sin error
 marco del reventon: None
 VEREDICTO el_reventon_no_lo_causa_el_campo_nuevo: OK
+EXIT=0

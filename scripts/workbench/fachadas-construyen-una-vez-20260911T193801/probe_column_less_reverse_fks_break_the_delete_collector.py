@@ -25,6 +25,18 @@ Se mide por contenido y en dos pasos:
 
 Si el censo ya trae FK sin columna apuntando a ``ResPartner`` con política
 distinta de ``DO_NOTHING``, el defecto es PREEXISTENTE y necesita hallazgo propio.
+
+**Su censo cambió al aterrizar TASK-API-0426, y el cambio es la evidencia del
+alcance.** Antes del arreglo las políticas medidas eran ``['None', 'RESTRICT']``;
+ahora son ``['DO_NOTHING', 'None']`` sobre las mismas 95 FK sin columna. El
+``RESTRICT`` desapareció porque ``fields_relational.py`` fuerza ``DO_NOTHING``
+para todo ``not has_column``, no sólo para el ``related=`` sin ``to``.
+
+Las que siguen en ``None`` **no son deuda del arreglo**: son relaciones que no
+tienen ``on_delete`` que fijar —M2M e inversas—, y entre ellas los dos M2M sin
+columna que apuntan a ``ResPartner`` (``base.ResPartnerCategory.partners`` y
+``fleet.FleetVehicleModel.vendors``). Ése es el sucesor **TASK-API-0425**, que
+esta misma sonda midió como preexistente.
 """
 import os
 import traceback

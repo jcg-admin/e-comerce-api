@@ -7,3 +7,4 @@ esperado que sobreviva: True | sobrevivio: True
 borrado del pais: sin error
 marco del reventon: None
 VEREDICTO la_politica_decide_el_reventon: OK
+EXIT=0

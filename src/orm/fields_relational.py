@@ -895,21 +895,43 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
     # la CADENA declarada contra ``IR_MODELS``, que lleva los ``_name`` de la
     # fuente. Traducir primero la dejaria sin nada que comparar.
     args, source_name = _translate_comodel(args)
-    if not has_column and not args and 'to' not in kwargs:
-        #: ``related=`` sin destino: la referencia lo declara así —
-        #: ``fields.Many2one(related='product_id.categ_id')``— porque el
-        #: extremo de la cadena determina el comodelo. Django exige ``to`` y
-        #: ``on_delete`` posicionales, así que el campo se construye apuntando
-        #: a su propio modelo y ``_field_setup_related`` lo reapunta al
-        #: destino real al cerrar el ``setup``.
+    if not has_column:
+        #: **Sin columna NO hay clave foránea, así que NO hay política que
+        #: aplicar** — y la que el campo hereda de :func:`_apply_ondelete` no es
+        #: inocua: es ``SET_NULL`` para todo ``null=True``, y el recolector de
+        #: ``delete()`` de Django sólo omite ``DO_NOTHING``
+        #: (``django/db/models/deletion.py``: la rama que salta el campo es
+        #: ``if field.remote_field.on_delete is DO_NOTHING``). Con cualquier
+        #: otra política el recolector recorre el campo y manda a emitir un
+        #: ``UPDATE`` sobre una columna que no existe.
         #:
-        #: ``DO_NOTHING`` es lo que hace inocuo el marcador: sin columna no hay
-        #: nada que cascadear, y la política real la fija el campo del extremo.
-        #: Medido en ``probe_relational_related_without_to`` — sin errores de
-        #: ``fields.E30x``, fuera del estado de migración, y tras el ``setup``
-        #: ``related_model`` pasa de ``ProbeRelCOwner`` a ``ProbeRelCTarget``,
-        #: con la lectura devolviendo la fila del destino.
-        args = ('self',)
+        #: Medido, y el par discrimina: con ``SET_NULL`` borrar un ``res.country``
+        #: aborta con ``FieldError: Cannot update model field <ForeignKey:
+        #: country> (only concrete fields are permitted)``
+        #: (``deletion.py:489 delete`` → ``query.py:1274 update``); con
+        #: ``DO_NOTHING`` el mismo borrado sobrevive. Sondas
+        #: ``probe_column_less_fk_with_set_null_breaks_country_delete`` y
+        #: ``probe_column_less_fk_with_do_nothing_survives_country_delete``,
+        #: evidencia ``scripts/evidence/ranuras2-2026-09-12T08-12-46-00{2,3}.log``.
+        #:
+        #: La política DECLARADA no se pierde: ``field.ondelete`` conserva el
+        #: ``resolved_ondelete`` unas líneas más abajo, que es el atributo que la
+        #: fuente expone y que leen ``ir.model.fields``, ``_check_inherits`` y el
+        #: One2many inverso. Lo que cambia es sólo el recorrido del recolector de
+        #: Django, que es un mecanismo que la fuente no tiene.
+        #:
+        #: ``related=`` sin destino añade su propio marcador: la referencia lo
+        #: declara así —``fields.Many2one(related='product_id.categ_id')``—
+        #: porque el extremo de la cadena determina el comodelo. Django exige
+        #: ``to`` posicional, así que el campo se construye apuntando a su propio
+        #: modelo y ``_field_setup_related`` lo reapunta al destino real al
+        #: cerrar el ``setup``. Medido en ``probe_relational_related_without_to``.
+        if not args and 'to' not in kwargs:
+            args = ('self',)
+        elif len(args) > 1:
+            # ``Many2one('x', models.CASCADE)`` — el segundo posicional ES el
+            # ``on_delete`` de Django, y se descarta para que el kwarg mande.
+            args = args[:1]
         kwargs['on_delete'] = models.DO_NOTHING
     field = _mark_check_company(models.ForeignKey(*args, **kwargs),
                                 check_company)

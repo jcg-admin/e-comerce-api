@@ -1,16 +1,20 @@
-"""Sonda M de TASK-API-0417 — forzando ``DO_NOTHING``, ¿sobrevive el borrado del
-país?
+"""Sonda M de TASK-API-0417 — con la guarda puesta, ¿el campo sin columna nace en
+``DO_NOTHING`` y sobrevive el borrado del país?
 
-Par de control de :ref:`h-api-1110` y bloqueante de TASK-API-0412. La sonda K
-midió que el campo relacional sin columna que el arreglo va a declarar nace con
-política ``SET_NULL``, y que el recolector de ``delete()`` sólo salta
-``DO_NOTHING``. Una FK sin columna que el recolector SÍ recorre hace que el
-compilador arme un ``Col`` con ``column=None`` y reviente
-(``compiler.py:30 quote_name_unless_alias``).
+Par de control de :ref:`h-api-1110` y cierre de TASK-API-0426.
 
-Las dos sondas son el mismo cuerpo con una sola línea de diferencia: la política
-del campo. Discrimina por construcción — si las dos dieran el mismo resultado, la
-política no sería la causa y el arreglo propuesto no serviría.
+**La mutación se retiró al aterrizar el arreglo.** Mientras el defecto vivía,
+esta sonda forzaba ``country_field.remote_field.on_delete = models.DO_NOTHING``
+a mano para demostrar que la política era la causa. Ese arreglo ya está en
+``fields_relational.py`` —``if not has_column: kwargs['on_delete'] =
+models.DO_NOTHING``, para TODO campo sin columna y no sólo para el ``related=``
+sin ``to``— así que la línea manual sobraba y escondía lo que ahora hay que
+medir: que la guarda lo hace **sola**.
+
+Por eso la sonda declara el campo tal cual y afirma **dos** cosas por contenido:
+que la política resuelta ES ``DO_NOTHING`` sin que nadie la toque, y que el
+borrado sobrevive. Su hermana L es el control de anulación —retira la guarda y
+comprueba que el borrado vuelve a reventar—, así que el par sigue discriminando.
 
 Se mide por contenido: se borra un país RECIÉN creado, con la compañía ya
 declarando el campo hacia él, y se reporta el reventón o su ausencia.
@@ -24,7 +28,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.testing')
 django.setup()
 
 import fields  # noqa: E402,F401
-from django.db import connection, models  # noqa: E402
+from django.db import connection  # noqa: E402
 from orm.fields_relational import Many2one  # noqa: E402
 from orm.model_classes import ensure_field_setup, mark_model_for_setup  # noqa: E402
 
@@ -48,11 +52,10 @@ ResCompany._inverse_country = _inverse_country
 
 country_field = Many2one(ResCountry, compute='_compute_address',
                          inverse='_inverse_country', null=True)
-#: LA MUTACIÓN: se fuerza ``DO_NOTHING``, que es lo único que el recolector salta
-#: (``deletion.py``: ``if related.field.remote_field.on_delete is DO_NOTHING:
-#: continue``). Es lo que ``fields_relational.py:913`` ya hace para el otro campo
-#: sin columna del árbol — el ``related=`` sin ``to``.
-country_field.remote_field.on_delete = models.DO_NOTHING
+#: SIN MUTACIÓN: el campo se declara tal cual. ``DO_NOTHING`` es lo único que el
+#: recolector salta (``deletion.py``: ``if related.field.remote_field.on_delete
+#: is DO_NOTHING: continue``), y ahora lo fuerza la propia construcción del campo
+#: para todo ``not has_column``.
 country_field.contribute_to_class(ResCompany, 'country')
 mark_model_for_setup(ResCompany)
 setup_count = ensure_field_setup()
@@ -94,6 +97,7 @@ survives = delete_error is None
 expected = {
     'setup_ran':          setup_count > 0,
     'no_column':          getattr(country_field, 'column', 'sentinel') is None,
+    'the_guard_forces_do_nothing':        policy == 'DO_NOTHING',
     'delete_survives_matches_the_policy': survives is True,
 }
 for key, ok in expected.items():
