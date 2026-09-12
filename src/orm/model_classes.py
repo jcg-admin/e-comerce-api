@@ -77,6 +77,7 @@ Django trae el acoplamiento tardío en ``Apps.lazy_model_operation``
 adaptador que lo vuelve seguro; el porqué está medido en ``H-API-577`` y sus
 pruebas en ``tests/unit/orm/test_extension_tardia_por_nombre.py``.
 """
+import copy
 import importlib
 import inspect
 import logging
@@ -343,6 +344,55 @@ DISPLAY_NAME_SYMBOLS = (
     'name_create', 'name_search',
 )
 
+#: El único de los cinco que es un CAMPO y no un método. Se separa porque su
+#: entrega es distinta: un método se cuelga con ``setattr`` y ya resuelve por
+#: MRO; un campo de Django **no existe** para el modelo hasta que alguien lo
+#: contribuye (``add_to_class`` -> ``contribute_to_class``).
+DISPLAY_NAME_FIELD = 'display_name'
+
+
+def _lacks_contributed_display_name(model_cls):
+    """Si al modelo le falta un ``display_name`` que de verdad funcione.
+
+    El discriminador es **de contenido**, no de presencia por MRO, y los cuatro
+    desenlaces son los que el árbol tiene:
+
+    =========================================  ==========================
+    Lo que el modelo resuelve hoy              Veredicto
+    =========================================  ==========================
+    está en ``_meta`` (contribuido)            ya lo tiene
+    una ``property`` propia                    ya lo tiene — gana por MRO,
+                                               que es lo que la fuente hace
+                                               con un ``compute`` reescrito
+    un ``models.Field`` pelado                 **le falta** — es el objeto
+                                               del mixin llano, que Django
+                                               nunca contribuyó
+    nada                                       **le falta**
+    =========================================  ==========================
+
+    La tercera fila es la que ``getattr(...) is None`` no podía ver: un
+    ``CharField`` colgado de una clase llana **resuelve** por MRO y por eso se
+    leía como «presente», aunque leer ``record.display_name`` devolviera el
+    objeto campo en vez de la etiqueta.
+
+    **Por qué las tres listas locales y no ``_meta.get_fields()``.** Esta
+    función corre en ``class_prepared``, o sea **mientras** el registro de apps
+    se puebla. ``get_fields()`` incluye las relaciones inversas, y para
+    resolverlas Django llama a ``_populate_directed_relation_graph`` ->
+    ``apps.get_models()`` -> ``check_models_ready()``, que aborta con
+    ``AppRegistryNotReady: Models aren't loaded yet`` (medido). Las tres listas
+    locales bastan: ``ModelBase`` **copia** a la clase hija los campos que
+    hereda de un modelo abstracto, así que un ``display_name`` contribuido por
+    la vía que sea ya está en una de ellas.
+    """
+    meta = model_cls._meta
+    declared = (tuple(meta.local_fields) + tuple(meta.private_fields)
+                + tuple(meta.local_many_to_many))
+    if any(f.name == DISPLAY_NAME_FIELD for f in declared):
+        return False
+    current = getattr(model_cls, DISPLAY_NAME_FIELD, None)
+    return current is None or isinstance(current, models.Field)
+
 
 def adopt_display_name(model_cls):
     """Le da al modelo su etiqueta y su búsqueda por etiqueta, si no las tiene.
@@ -357,12 +407,31 @@ def adopt_display_name(model_cls):
     Esta función cubre a los **90** que no: los que declaran su propia base,
     como toda la familia ``account``.
 
-    Un símbolo que el modelo ya resuelve **no se toca**, y el discriminador es
-    ``getattr`` sobre el MRO, no ``__dict__``: un modelo que hereda su
-    ``_compute_display_name`` de una base propia lo tiene tan resuelto como el
-    que lo declara. Los doce que declaran ``display_name`` como ``property``
-    siguen ganando por MRO, que es lo que la fuente hace con un ``compute``
-    sobreescrito.
+    **Los cuatro métodos y el campo se entregan distinto, y ésa es la mitad que
+    esta función tuvo mal.** Un método se cuelga con ``setattr`` y resuelve por
+    MRO; su discriminador sigue siendo ``getattr``, porque un modelo que hereda
+    su ``_compute_display_name`` de una base propia lo tiene tan resuelto como
+    el que lo declara. Un **campo de Django no existe** para el modelo hasta
+    que alguien lo contribuye: se entrega con ``add_to_class`` sobre una
+    ``copy.deepcopy`` —que es lo que ``ModelBase`` hace con los campos que
+    hereda de un abstracto; ``clone()`` no sirve, porque reconstruye desde
+    ``deconstruct()`` y pierde ``compute``, ``search`` y ``store``— y su
+    discriminador es :func:`_lacks_contributed_display_name`, que mira el
+    contenido.
+
+    > **Corregido (TASK-API-0417).** El discriminador era ``getattr(...) is
+    > None`` para los cinco, y la entrega ``setattr`` para los cinco. Los dos
+    > fallaban sobre el campo, y sólo se destapó al retirar el enrutado de las
+    > fachadas: con ``Char(compute=...)`` construyendo un ``CharField`` real en
+    > vez de un descriptor, el campo que :class:`orm.models.DisplayNameMixin`
+    > declara dejó de llegar a ningún ``_meta`` —Django **no contribuye** los
+    > campos de una clase llana, sólo los del ``attrs`` que construye y los
+    > heredados de modelos **abstractos**— y ``record.display_name`` devolvía
+    > el objeto campo. ``getattr`` lo leía como presente (resuelve por MRO) y
+    > ``setattr`` no habría podido arreglarlo (no contribuye nada). Medido:
+    > **398 de 399** modelos sin ``display_name`` en el registro; el único
+    > superviviente era ``addons.test_orm.models.test_orm.TestOrmCategory``,
+    > que lo declara él mismo.
 
     :returns: cuántos de los cinco símbolos se instalaron — 0 si ya los tenía,
         es de terceros o es abstracto, para que el llamador pueda medir en vez
@@ -377,15 +446,22 @@ def adopt_display_name(model_cls):
     if model_cls.__module__.startswith(THIRD_PARTY_MODULE_PREFIXES):
         return 0
 
-    faltantes = [nombre for nombre in DISPLAY_NAME_SYMBOLS
-                 if getattr(model_cls, nombre, None) is None]
-    if not faltantes:
-        return 0
-
     mixin = importlib.import_module('orm.models').DisplayNameMixin
-    for nombre in faltantes:
-        setattr(model_cls, nombre, mixin.__dict__[nombre])
-    return len(faltantes)
+    adopted = 0
+
+    if _lacks_contributed_display_name(model_cls):
+        model_cls.add_to_class(
+            DISPLAY_NAME_FIELD,
+            copy.deepcopy(mixin.__dict__[DISPLAY_NAME_FIELD]))
+        adopted += 1
+
+    for name in DISPLAY_NAME_SYMBOLS:
+        if name == DISPLAY_NAME_FIELD:
+            continue
+        if getattr(model_cls, name, None) is None:
+            setattr(model_cls, name, mixin.__dict__[name])
+            adopted += 1
+    return adopted
 
 
 def adopt_base_url(model_cls):

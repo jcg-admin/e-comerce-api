@@ -18,14 +18,32 @@ La referencia declara relaciones **calculadas y no almacenadas**::
 — un ``compute`` sin ``store`` **no tiene columna**: el valor se resuelve al
 leerlo. Django no lo tiene: todo ``ForeignKey`` es una columna.
 
-Por eso ``Many2one`` deja de ser un alias pelado y pasa a ser un
-**despachador**, el mismo patrón que ya tienen ``Char``
-(``orm/fields_textual.py``) y ``Float`` (``orm/fields_numeric.py``): con
-``store`` por defecto devuelve el ``ForeignKey`` de siempre y con
-``store=False`` devuelve un :class:`~orm.fields_nonstored.NonStored`. El sitio
-de declaración queda **idéntico al de la fuente**, que es el punto — la
-alternativa era colgar una ``property`` fuera de la clase y repartir en el
-cableado lo que la referencia declara en el cuerpo.
+Por eso ``Many2one`` deja de ser un alias pelado y pasa a ser una **fachada**,
+el mismo patrón que ya tienen ``Char`` (``orm/fields_textual.py``) y ``Float``
+(``orm/fields_numeric.py``). El sitio de declaración queda **idéntico al de la
+fuente**, que es el punto — la alternativa era colgar una ``property`` fuera de
+la clase y repartir en el cableado lo que la referencia declara en el cuerpo.
+
+**La fachada ya no elige clase, y ésa es la corrección de TASK-API-0417.** Hasta
+``api@2437373d`` devolvía un ``ForeignKey`` o un ``NonStored`` según el valor de
+``store``, que es exactamente lo que la fuente NO hace: ahí ``store`` es un
+atributo del campo y nunca un tipo distinto
+(``odoo19c: odoo/orm/fields.py:455``, dentro del bloque ``_get_attrs`` de
+``:443-465``). Hoy la fachada construye **siempre** el tipo de Django y se
+limita a tres cosas — derivar lo que ``compute=``/``related=`` implican
+(:func:`~orm.fields_nonstored.apply_source_defaults`), reenviar el vocabulario
+de la fuente al constructor, y anotar el resultado. La forma sin columna la
+resuelve la **costura** (``orm/fields.py``): ``_field_contribute_to_class``
+llama a ``contribute_to_class`` con ``private_only=True``, así que el campo no
+entra en ``_meta.concrete_fields``, no genera migración y no tiene columna.
+
+Lo que lo hizo posible: ``_field_init_with_copy`` recoge el vocabulario
+declarado en ``_args__`` **antes** de delegar en Django, y retira de ``kwargs``
+lo que el constructor de Django no admite. Medido en la sonda
+``probe_vocabulary_reaches_args_by_type`` del workbench
+``fachadas-construyen-una-vez-20260911T193801``: los **once** tipos que las
+fachadas construyen recogen ``store`` y ``related``, incluidos ``ForeignKey`` y
+``ManyToManyField``, que tienen ``__init__`` propio.
 
 ``join`` — el salto de un camino relacional
 ===========================================
@@ -40,13 +58,22 @@ misma razón de forma que ``orm/fields.py`` declara para ``to_sql``: la clase es
 de Django y no es nuestra para declararla. Medido antes de adjuntar: ``join``
 da ``False`` en ``hasattr(models.ForeignKey, 'join')``.
 
-``Many2many`` no lleva **esas dos** ramas: ``grep -rn "Many2many(" ``
-sobre ``odoo19c:`` no arroja ninguna declarada ``store=False`` con ``compute``
-sin almacenar en la familia ``base``, así que dárselo sería construir para un
-caso que no existe. Tampoco lleva ``company_dependent``: ``many2many`` no está
-en la lista cerrada de tipos que la fuente admite
+``Many2many`` **no lleva** ``company_dependent``: ``many2many`` no está en la
+lista cerrada de tipos que la fuente admite
 (``odoo19c: odoo/orm/fields.py:42-44``) — un ``jsonb`` guarda un valor por
-empresa, no una tabla intermedia.
+empresa, no una tabla intermedia. Su rama sigue siendo un ``ValueError``.
+
+Su ``store=False`` **dejó de ser una rama** con la retirada del enrutado: la
+fachada acepta la palabra clave, la deriva igual que las otras ocho y construye
+el ``ManyToManyField`` de siempre. Lo que **no** está medido es qué hace la
+costura con un muchos-a-muchos bajo ``private_only``: su tabla intermedia no es
+una columna del modelo, así que el mecanismo que vacía la columna de un escalar
+no tiene contraparte obvia aquí. No se afirma que funcione ni que falle —
+**DESCONOCIDO declarado**, y su condición de cierre es que exista un consumidor
+que medir: hoy ``grep -rn "Many2many(" `` sobre ``odoo19c:`` no arroja ninguna
+declaración ``store=False`` con ``compute`` sin almacenar en la familia
+``base``. Sucesor: **TASK-API-0418**, que retira ``NonStored`` como clase y es
+donde el eje ``store`` queda medido tipo por tipo.
 
 .. note:: **Corregido.** Esta línea decía *"``Many2many`` **no** lleva el
    despachador"*, y hoy sí lo lleva: es una función, no el alias pelado
@@ -74,9 +101,8 @@ from orm.environments import env as get_environment
 from orm.fields_company_dependent import CompanyDependent
 from orm.fields_nonstored import (
     _UNSET,
-    NonStored,
     annotate_related,
-    projection_or_none,
+    apply_source_defaults,
 )
 from django.db.models.fields.related import lazy_related_operation
 from orm.identifiers import NewId
@@ -125,8 +151,8 @@ class One2many:
     contado.
 
     **No persiste.** Sigue el protocolo de ``contribute_to_class`` sin
-    registrarse en ``_meta``, igual que :class:`~orm.fields_nonstored.NonStored`:
-    la columna es la FK del hijo, que ya existe. Un ``One2many`` en ``_meta``
+    registrarse en ``_meta``, igual que la forma sin columna que la costura
+    resuelve con ``private_only``: la columna es la FK del hijo, que ya existe. Un ``One2many`` en ``_meta``
     generaria migracion para una columna que nadie tiene.
 
     Cobertura del porte — 13 simbolos en la fuente
@@ -196,39 +222,22 @@ class One2many:
     #: ≙ ``type = 'one2many'`` (``odoo19c: :866``).
     type = 'one2many'
 
-    def __new__(cls, *args, related=None, **kwargs):
-        """Despacha la proyección sin dejar de ser una clase.
-
-        ``One2many`` no puede ser una función —``domains`` la usa en un
-        ``isinstance``— así que la bifurcación va aquí, con el mismo mecanismo
-        que ``Html``: cuando ``__new__`` devuelve una instancia que **no** es
-        de ``cls``, Python no llama a ``__init__``.
-
-        **Este era el peor de los nueve.** El ``**_ignored`` de abajo tragaba
-        ``related=`` y devolvía un campo sin la ruta puesta: la declaración se
-        escribía igual que la de la fuente
-        (``fields.One2many(related='employee_id.subordinate_ids')``), pasaba
-        sin error, y no hacía nada. Es literalmente el defecto que el
-        comentario de ``domain``/``context`` de este mismo constructor ya
-        describe —*«un parámetro tragado es peor que uno ausente»*— cometido
-        por segunda vez en la misma firma.
-
-        Sin ``store`` no hay comodelo ni inverso que declarar: el extremo de
-        la cadena es el manager del reverso, y navegarlo no necesita ninguno
-        de los dos. Es lo que la referencia declara, sin ellos.
-        """
-        projection, _attributes = projection_or_none(related, kwargs)
-        if projection is not None:
-            return projection
-        instance = super().__new__(cls)
-        instance.related = related
-        return instance
-
     def __init__(self, comodel_name=None, inverse_name=None, *, copy=False,
                  string=None, domain=None, context=None,
                  bypass_search_access=False, related=None, **_ignored):
-        #: ``__new__`` ya lo dejó puesto; se acepta con nombre para que **no**
-        #: caiga en ``**_ignored``, que es como se tragaba antes.
+        #: Se acepta con nombre para que **no** caiga en ``**_ignored``, que es
+        #: como se tragaba antes: la declaración se escribía igual que la de la
+        #: fuente (``fields.One2many(related='employee_id.subordinate_ids')``),
+        #: pasaba sin error, y no hacía nada. Un parámetro tragado es peor que
+        #: uno ausente, que es lo que el comentario de ``domain``/``context``
+        #: de este mismo constructor ya decía.
+        #:
+        #: **Aquí NO se llama a ``apply_source_defaults``**, y es la única de
+        #: las nueve fachadas donde no se llama: ``One2many`` no construye un
+        #: ``models.Field``, así que no hay constructor de Django al que
+        #: reenviar el vocabulario ni ``_args__`` que lo recoja. Su extremo de
+        #: cadena es el manager del reverso, que no necesita comodelo ni
+        #: inverso declarados — es lo que la referencia declara, sin ellos.
         self.related = related
         self.comodel_name = comodel_name
         self.inverse_name = inverse_name
@@ -510,14 +519,13 @@ def Many2many(*args, check_company=False, store=_UNSET, related=None,
     #:
     #: La bandera viaja hasta el bloque de ``precompute``: un M2M no se puede
     #: adelantar al ``INSERT`` —su tabla intermedia necesita el ``pk``—, así
-    #: que ahí se apaga con aviso. Va por el enrutador y no por una segunda
-    #: llamada a ``apply_source_defaults`` porque la primera **vacía**
-    #: ``kwargs``: llamarla dos veces devolvía un vocabulario vacío, y el
-    #: campo salía sin ``compute`` anotado.
-    projection, related_attrs = projection_or_none(related, kwargs,
-                                                   many_to_many=True)
-    if projection is not None:
-        return _mark_check_company(projection, check_company)
+    #: que ahí se apaga con aviso. ``many_to_many=True`` es lo que lo lleva al
+    #: derivador, que es la única copia de los tres bloques de la fuente.
+    related_attrs = apply_source_defaults(related, kwargs, many_to_many=True)
+    #: El tipo se construye SIEMPRE: ``store`` es un atributo del campo, no una
+    #: clase distinta (``odoo19c: odoo/orm/fields.py:455``). La forma sin
+    #: columna la resuelve la costura —``contribute_to_class`` con
+    #: ``private_only``— y no el enrutado de esta fachada.
     args, source_name = _translate_comodel(args)
     field = _mark_check_company(models.ManyToManyField(*args, **kwargs),
                                 check_company)
@@ -813,11 +821,17 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
     devuelve un ``models.ForeignKey`` con la firma de Django, exactamente como
     antes: el alias sigue siendo transparente para quien no nombra ``store``.
 
-    ``store=False`` devuelve un campo **no persistido** cuyo valor sale de
-    ``default`` al leerlo. No genera migración ni aparece en ``_meta``, que es
-    lo que la referencia promete con un ``compute`` sin ``store``. El primer
-    argumento posicional —el modelo apuntado— se acepta y se descarta, igual
-    que ``NonStored`` descarta el resto de la firma de Django.
+    ``store=False`` construye **el mismo** ``models.ForeignKey``: ``store`` es un
+    atributo del campo, no un tipo distinto. Quien lo deja sin columna es la
+    costura, que lo contribuye con ``private_only=True`` — no genera migración
+    ni aparece en ``_meta.concrete_fields``, que es lo que la referencia promete
+    con un ``compute`` sin ``store``.
+
+    Y **sin comodelo declarado** —la forma que la referencia usa con
+    ``related=``— el campo se construye contra su propio modelo con
+    ``DO_NOTHING``, y ``_field_setup_related`` lo reapunta al destino real al
+    cerrar el ``setup``. Ver el comentario de esa rama, con la sonda que la
+    mide.
 
     ``company_dependent=True`` — el destino depende de la empresa
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -852,11 +866,9 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
     #: default literal no puede.
     if store is not _UNSET:
         kwargs['store'] = store
-    projection, related_attrs = projection_or_none(related, kwargs,
-                                                  company_dependent)
-    if projection is not None:
-        return projection
-    store = related_attrs['store']
+    related_attrs = apply_source_defaults(related, kwargs,
+                                         company_dependent=company_dependent)
+    has_column = related_attrs['store']
 
     if company_dependent:
         to = args[0] if args else kwargs.pop('to', None)
@@ -883,11 +895,24 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
     # la CADENA declarada contra ``IR_MODELS``, que lleva los ``_name`` de la
     # fuente. Traducir primero la dejaria sin nada que comparar.
     args, source_name = _translate_comodel(args)
-    if store:
-        field = _mark_check_company(models.ForeignKey(*args, **kwargs),
-                                    check_company)
-    else:
-        field = _mark_check_company(NonStored(*args, **kwargs), check_company)
+    if not has_column and not args and 'to' not in kwargs:
+        #: ``related=`` sin destino: la referencia lo declara así —
+        #: ``fields.Many2one(related='product_id.categ_id')``— porque el
+        #: extremo de la cadena determina el comodelo. Django exige ``to`` y
+        #: ``on_delete`` posicionales, así que el campo se construye apuntando
+        #: a su propio modelo y ``_field_setup_related`` lo reapunta al
+        #: destino real al cerrar el ``setup``.
+        #:
+        #: ``DO_NOTHING`` es lo que hace inocuo el marcador: sin columna no hay
+        #: nada que cascadear, y la política real la fija el campo del extremo.
+        #: Medido en ``probe_relational_related_without_to`` — sin errores de
+        #: ``fields.E30x``, fuera del estado de migración, y tras el ``setup``
+        #: ``related_model`` pasa de ``ProbeRelCOwner`` a ``ProbeRelCTarget``,
+        #: con la lectura devolviendo la fila del destino.
+        args = ('self',)
+        kwargs['on_delete'] = models.DO_NOTHING
+    field = _mark_check_company(models.ForeignKey(*args, **kwargs),
+                                check_company)
     # El atributo SOBREVIVE a la construccion, y no es cosmetico: la fuente lo
     # LEE desde cuatro sitios ademas de la FK — `ir.model.fields` lo refleja a
     # su columna `on_delete` (`odoo19c: ir_model.py:1164`), `_check_inherits`
@@ -897,7 +922,7 @@ def Many2one(*args, store=_UNSET, company_dependent=False,
     # (`test_orm/tests/test_fields.py:4230-4256`, cuatro casos). Un porte que
     # solo tradujera el kwarg dejaria ciegos a los cuatro.
     field.ondelete = resolved_ondelete
-    if ondelete_from_default and store:
+    if ondelete_from_default:
         #: El gancho que :func:`~orm.fields._field_contribute_to_class` invoca
         #: cuando la clase ya existe. Se cuelga SOLO si la politica salio del
         #: default: su presencia ES la guarda ``if not self.ondelete`` de

@@ -1243,6 +1243,25 @@ def _field_get_attrs(self, model_class, name):
                 f"its join table needs the pk of a row that does not exist "
                 f"yet {self}", stacklevel=1)
             attrs['precompute'] = False
+    if (attrs.get('readonly') and attrs.get('store')
+            and 'editable' not in attrs):
+        # ``editable=False`` es la forma NATIVA de Django de decir «esto no lo
+        # escribe el cliente», y es la que DRF ya consume: ``get_field_kwargs``
+        # (``rest_framework/utils/field_mapping.py:124-128``) hace
+        # ``if ... or not model_field.editable: kwargs['read_only'] = True`` y
+        # retorna. El contrato del endpoint sale del riel del anfitrión, sin
+        # override en ningún serializer — el stack lo trae hecho.
+        #
+        # Aplica al calculado **y al related**, que es lo que la fuente declara
+        # para los dos (``:451`` y ``:458``, ambos ``readonly``). La guarda de
+        # ``store`` es lo que la hace correcta: sin columna no hay contrato de
+        # escritura que proteger, y con ella el campo ya está publicado.
+        #
+        # **Vivía en ``apply_source_defaults``**, que la aplicaba como kwarg del
+        # constructor. Aquí es un atributo derivado como los demás, y por eso
+        # llega igual a un campo que declaró ``store``/``readonly`` sin pasar
+        # por una fachada.
+        attrs['editable'] = False
     if attrs.get('company_dependent',
                  getattr(self, 'company_dependent', False)):
         # El respaldo sobre la instancia es la divergencia de mecanismo: allá
@@ -1546,6 +1565,22 @@ class FieldDescriptor(DeferredAttribute):
             else:
                 field.compute_value(instance)
                 if record_id in tuple(field._cache_missing_ids(instance)):
+                    if field.attname in instance.__dict__:
+                        # **El cómputo SÍ asignó — al almacén, no a la caché
+                        # del ORM.** ``__set__`` escribe siempre
+                        # ``instance.__dict__[attname]`` y sólo siembra
+                        # ``env.cache`` con ``pk``; sobre una fila nueva la
+                        # clave es ``None`` y la caché nunca la recibe, así
+                        # que ``_cache_missing_ids`` la sigue reportando
+                        # ausente. Es el mismo acierto que la rama del
+                        # almacén de arriba, y responde igual: la forma de
+                        # registro, traducida. Medido en la sonda E del
+                        # workbench ``fachadas-construyen-una-vez``: la
+                        # primera lectura levantaba *Compute method failed to
+                        # assign* con el valor ya en ``after_dict``; la
+                        # segunda lo devolvía por el almacén.
+                        return field.convert_to_record(
+                            instance.__dict__[field.attname], instance)
                     if getattr(field, 'readonly', False) and not field.store:
                         raise ValueError(
                             f'Compute method failed to assign '
@@ -2124,6 +2159,15 @@ def type_for(field):
     delega aquí desde el 2026-08-30: el mapa tenía dos dueños y el de la
     referencia es éste.
     """
+    #: Lo que la FACHADA declaró gana sobre lo que el campo construido
+    #: aparenta: ``make_dispatcher`` anota ``declared_type`` con el
+    #: ``base_type`` del tipo de la fuente, que es el porte del atributo de
+    #: clase ``type`` de la referencia. Sin esta rama un
+    #: ``Selection(related=…)`` —``CharField`` sin ``choices`` todavía—
+    #: publicaba ``char`` y rompía la comparación de ``setup_related``.
+    declared = getattr(field, 'declared_type', None)
+    if declared:
+        return declared
     internal = field.get_internal_type()
     if internal == 'CharField' and getattr(field, 'choices', None):
         return 'selection'
@@ -3620,20 +3664,36 @@ def walk_related_chain(field, model):
     fuente que preservar, y un ``_nombre`` importado entre módulos sería el
     defecto que PEP 8 nombra.
 
-    **Divergencia de mecanismo, medida:** aquí ``_fields`` es una ``property``
-    de **instancia** (``orm/models.py:1355``), y este recorrido corre sobre la
-    **clase** — Django liga los campos al construirla, así que no hay fase de
-    espera que replicar. El cuerpo de esa property es
-    ``{f.name: f for f in self._meta.get_fields()}``, y eso es exactamente lo
-    que se consulta: el mismo registro, alcanzado desde la clase.
+    **Divergencia de mecanismo, medida:** allá ``_fields`` es un atributo de la
+    clase de registro, y este recorrido corre sobre la **clase** — Django liga
+    los campos al construirla, así que no hay fase de espera que replicar. El
+    registro se consulta con :func:`~orm.utils.model_field_registry`, que es el
+    cuerpo que ``BaseModel._fields`` invoca: **el mismo** mapa, alcanzado desde
+    la clase.
+
+    > **Corregido (TASK-API-0417).** Este recorrido construía su propio mapa con
+    > ``{f.name: f for f in current._meta.get_fields()}``. La primera redacción
+    > de esta nota decía que ese mapa era «estrictamente más estrecho porque un
+    > campo sin columna se contribuye con ``private_only=True`` y no aparece
+    > ahí», y **eso es falso**: medido sobre ``TestOrmCategory``,
+    > ``_meta.private_fields`` da ``['depth', 'root_categ', 'display_name',
+    > 'dummy']`` y los cuatro salen en ``get_fields()`` con ``hidden=False``.
+    > ``Options.get_fields()`` **sí** devuelve los campos privados.
+    >
+    > Lo que el mapa propio no alcanzaba es la otra población que
+    > :func:`~orm.utils.model_field_registry` une: los ``NonStored`` que viven
+    > en el ``vars()`` de una clase del MRO y que **ningún** ``_meta`` ve,
+    > porque no son campos de Django. Mientras las fachadas enrutaban, un
+    > ``related=`` devolvía justo uno de ésos. El cambio se conserva por esa
+    > razón —y caduca con TASK-API-0418, que retira ``NonStored`` como clase—;
+    > la ceguera de :ref:`h-api-1025` **no** tiene aquí un tercer sitio.
 
     Lanza ``KeyError`` nombrando el eslabón que falta, como la fuente
     (``:611-615``).
     """
     field_seq, current = [], model
     for name in field.related.split('.'):
-        by_name = {f.name: f for f in current._meta.get_fields()}
-        link = by_name.get(name)
+        link = model_field_registry(current).get(name)
         if link is None:
             raise KeyError(
                 f'El campo {name} de la definición related de {field.name} '
@@ -3699,6 +3759,54 @@ def _field_setup_related(self, model):
     for attribute, prop in self.related_attrs:
         if attribute not in self.__dict__ and prop.startswith('_related_'):
             setattr(self, attribute, getattr(field_seq[-1], prop, None))
+
+    _retarget_related_relation(self, field_seq[-1])
+
+
+#: Las ``cached_property`` de Django que derivan de ``remote_field.model``
+#: (``related.py:111,790-802,891,911``). Se vacían al reapuntar la relación:
+#: un valor cacheado contra el placeholder describiría al modelo equivocado.
+_RELATION_CACHED_PROPERTIES = (
+    'related_model', 'related_fields', 'reverse_related_fields',
+    'local_related_fields', 'foreign_related_fields', 'path_infos',
+    'reverse_path_infos', 'cached_col',
+)
+
+
+def _retarget_related_relation(field, end_of_chain):
+    """Reapunta una relación ``related=`` sin ``to`` al comodelo de la cadena.
+
+    En la fuente el comodelo de un ``Many2one(related=...)`` viene de
+    ``_related_comodel_name`` (``:643-647``): la fachada no exige ``to``. En
+    este stack ``ForeignKey`` exige un destino al construirse, y el que se
+    declara sin él lleva un **placeholder** que Django ya resolvió y cacheó
+    —``remote_field.model``, ``related_model`` y sus derivadas— antes de que
+    ``setup_related`` corra. Copiar ``comodel_name`` (el bucle de arriba) deja
+    el nombre bien y el descriptor mal: ``ForwardManyToOneDescriptor.__set__``
+    comprueba contra ``remote_field.model._meta.concrete_model``
+    (``related_descriptors.py:285``) y rechaza la fila del comodelo real.
+
+    Medido en la sonda C del workbench ``fachadas-construyen-una-vez``:
+    ``comodel_name`` copiado correcto y ``remote_model`` en el placeholder,
+    con *Cannot assign ... must be a ... instance* al leer.
+    """
+    if not (field.is_relation and getattr(end_of_chain, 'is_relation', False)):
+        return
+    target = getattr(end_of_chain, 'related_model', None)
+    if target is None or isinstance(target, str):
+        return
+    remote = getattr(field, 'remote_field', None)
+    if remote is None or remote.model is target:
+        return
+    remote.model = target
+    #: ``ForeignKey.contribute_to_related_class`` fijó el nombre de la clave
+    #: del placeholder (``related.py:1196``); el del comodelo real puede
+    #: diferir.
+    if getattr(remote, 'field_name', None) is not None:
+        remote.field_name = target._meta.pk.name
+    for cached in _RELATION_CACHED_PROPERTIES:
+        field.__dict__.pop(cached, None)
+    remote.__dict__.pop('related_model', None)
 
 
 models.Field.setup_related = _field_setup_related
